@@ -1,6 +1,6 @@
-= Praxis on OpenShift: Showroom lab guide
+= Praxis on OpenShift AI: Showroom lab guide
 
-A hands-on workshop for link:https://github.com/praxis-proxy/praxis[Praxis^], the Rust proxy framework, and link:https://github.com/praxis-proxy/ai[Praxis AI^], the AI gateway built on it. It runs on OpenShift with published images and simulated models: no local build and no GPUs.
+A hands-on workshop for link:https://github.com/praxis-proxy/praxis[Praxis^], the Rust proxy framework, and link:https://github.com/praxis-proxy/ai[Praxis AI^], the AI gateway built on it. It runs on Red Hat OpenShift AI, with published images and simulated models served as KServe InferenceServices: no local build and no GPUs.
 
 This repository contains:
 
@@ -23,6 +23,7 @@ lab/
   README.md                      Lab overview
   CONCEPTS.md, AI.md             Background: how Praxis and Praxis AI work
   openshift/                     The lab: manifests, setup.sh, teardown.sh, walkthrough
+    prereqs/                     Installs OpenShift AI with KServe, if the cluster lacks it
   local/                         Optional: podman version for a laptop
 ----
 
@@ -31,12 +32,14 @@ The manifests in `content/modules/ROOT/examples/` are copies of the tested files
 Some manifests are split into one file per step, so each block learners run stays short:
 
 * `05-echo-service.yaml` and `05-echo-deployment.yaml` are one-server templates applied in a loop. Together they must produce the objects in `lab/openshift/05-echo.yaml`.
-* The four `10-*.yaml` files together must match `lab/openshift/10-models.yaml`.
+* `10-serving-runtime.yaml` matches `lab/openshift/10-serving-runtime.yaml`, and the three `11-*.yaml` files (one InferenceService each) together must match `lab/openshift/11-models.yaml`.
 * The five `06-basics-*.yaml` files together must match `lab/openshift/06-praxis-basics.yaml`.
 * The five `20-ai-*.yaml` files (excluding `-with-llama`) together must match `lab/openshift/20-praxis-ai.yaml`.
 * `20-ai-configmap-with-llama.yaml` is the ConfigMap from `lab/openshift/solutions/20-praxis-ai-with-llama.yaml`; the Module 3 exercise solution applies only the ConfigMap.
 
 == Running the lab without Showroom
+
+The cluster needs Red Hat OpenShift AI 3.x with KServe enabled. If it doesn't have it, install it first with the files in `lab/openshift/prereqs/` (see `lab/openshift/README.md`). Then:
 
 [source,sh]
 ----

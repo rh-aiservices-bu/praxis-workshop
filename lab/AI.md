@@ -279,7 +279,8 @@ cluster, but only under emulation on an Apple Silicon Mac.
 ## Trying it
 
 **Part 1 of the [OpenShift lab](openshift/README.md)** runs Praxis AI 0.9.0
-in front of simulated models (llm-d-inference-sim, CPU only):
+in front of simulated models (llm-d-inference-sim, CPU only) served by
+OpenShift AI as KServe InferenceServices:
 
 - routing on body `model`, with client copies of the routing header stripped
 - Anthropic Messages clients served by OpenAI Chat backends, streaming
@@ -300,8 +301,8 @@ Things the lab found that aren't obvious from the docs:
 
 Next steps beyond the lab:
 
-- Swap a simulator for a real model served by OpenShift AI / KServe / vLLM.
-  The gateway config doesn't change, only the endpoint.
+- Swap the simulator ServingRuntime for vLLM on a GPU node, keeping the same
+  InferenceService names, so the gateway config doesn't change.
 - Point Claude Code at the gateway (`allow_lossy_features` on the
   translation filter lets its prompt-caching and thinking requests through).
 - Use an `-experimental` image or a custom build to try token budgets per

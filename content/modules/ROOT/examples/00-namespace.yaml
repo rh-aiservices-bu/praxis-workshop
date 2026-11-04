@@ -1,12 +1,15 @@
 # Namespace for the Praxis OpenShift lab, with guardrails:
 #   - a ResourceQuota that forbids requesting any GPU in this namespace
 #   - a LimitRange so every container gets modest CPU/memory defaults
+# The opendatahub.io/dashboard label shows it as a project in the
+# OpenShift AI dashboard, where the simulated models appear.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: praxis
   labels:
     app.kubernetes.io/part-of: praxis-lab
+    opendatahub.io/dashboard: "true"
 ---
 apiVersion: v1
 kind: ResourceQuota

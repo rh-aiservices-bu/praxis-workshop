@@ -1,0 +1,28 @@
+# Prerequisite (not part of the workshop): install the Red Hat OpenShift AI
+# operator. Skip this if the cluster already has OpenShift AI 3.x.
+#
+#   oc apply -f lab/openshift/prereqs/01-openshift-ai-operator.yaml
+#   oc -n redhat-ods-operator get csv -w      # wait for Succeeded
+#   oc apply -f lab/openshift/prereqs/02-datasciencecluster.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: redhat-ods-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: rhods-operator
+  namespace: redhat-ods-operator
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: rhods-operator
+  namespace: redhat-ods-operator
+spec:
+  name: rhods-operator
+  channel: stable-3.x
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic

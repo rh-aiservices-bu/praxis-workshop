@@ -1,76 +1,27 @@
 # Exercise: add a third model while the gateway keeps running.
 # Apply this, then add a route and a cluster for it to the praxis-ai
-# ConfigMap (see Module 3, exercise 6). No gateway restart is needed.
-apiVersion: v1
-kind: Service
+# ConfigMap. No gateway restart is needed. KServe serves it at
+# llama-predictor.praxis.svc.cluster.local:8000.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
 metadata:
   name: llama
   namespace: praxis
   labels:
-    app: llama
+    opendatahub.io/dashboard: "true"
     app.kubernetes.io/part-of: praxis-lab
+  annotations:
+    openshift.io/display-name: llama-3.1-8b-instruct
+    serving.kserve.io/deploymentMode: RawDeployment
 spec:
-  selector:
-    app: llama
-  ports:
-    - name: http
-      port: 8000
-      targetPort: 8000
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: llama
-  namespace: praxis
-  labels:
-    app.kubernetes.io/part-of: praxis-lab
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: llama
-  template:
-    metadata:
-      labels:
-        app: llama
-        app.kubernetes.io/part-of: praxis-lab
-    spec:
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: sim
-          image: ghcr.io/llm-d/llm-d-inference-sim:v1.1.0
-          args:
-            - --model=llama-3.1-8b-instruct
-            - --port=8000
-            - --time-to-first-token=500ms
-            - --inter-token-latency=40ms
-          env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: NVIDIA_VISIBLE_DEVICES
-              value: void
-          ports:
-            - name: http
-              containerPort: 8000
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8000
-            periodSeconds: 5
-          resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              cpu: "1"
-              memory: 256Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: llm-d-sim
+      runtime: llm-d-inference-sim
+      args:
+        - --model=llama-3.1-8b-instruct
+        - --time-to-first-token=500ms
+        - --inter-token-latency=40ms

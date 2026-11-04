@@ -1,0 +1,82 @@
+# Simulated models, served by OpenShift AI (KServe) as InferenceServices on the
+# llm-d-inference-sim ServingRuntime (10-serving-runtime.yaml).
+#
+#   granite-a, granite-b  the same model, granite-3.1-8b-instruct, served
+#                         twice. Praxis balances and health-checks across the
+#                         two, as you would across two zones or two clusters.
+#   qwen                  qwen3-8b
+#
+# KServe creates a Deployment and a Service named <name>-predictor for each.
+# In RawDeployment mode the Service is headless, so the name resolves to the
+# pod IP and clients connect to the container port, 8000.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: granite-a
+  namespace: praxis
+  labels:
+    opendatahub.io/dashboard: "true"
+    app.kubernetes.io/part-of: praxis-lab
+  annotations:
+    openshift.io/display-name: granite-3.1-8b-instruct (a)
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: llm-d-sim
+      runtime: llm-d-inference-sim
+      args:
+        - --model=granite-3.1-8b-instruct
+        - --time-to-first-token=150ms
+        - --inter-token-latency=20ms
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: granite-b
+  namespace: praxis
+  labels:
+    opendatahub.io/dashboard: "true"
+    app.kubernetes.io/part-of: praxis-lab
+  annotations:
+    openshift.io/display-name: granite-3.1-8b-instruct (b)
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: llm-d-sim
+      runtime: llm-d-inference-sim
+      args:
+        - --model=granite-3.1-8b-instruct
+        - --time-to-first-token=150ms
+        - --inter-token-latency=20ms
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen
+  namespace: praxis
+  labels:
+    opendatahub.io/dashboard: "true"
+    app.kubernetes.io/part-of: praxis-lab
+  annotations:
+    openshift.io/display-name: qwen3-8b
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: llm-d-sim
+      runtime: llm-d-inference-sim
+      args:
+        - --model=qwen3-8b
+        - --time-to-first-token=300ms
+        - --inter-token-latency=30ms

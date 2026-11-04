@@ -17,19 +17,19 @@ Praxis is a proxy framework built for both. Praxis core provides the general-pur
 
 == What you'll build
 
-By the end of the workshop, your `{namespace}` namespace contains two gateways and their backends:
+By the end of the workshop, your `{namespace}` project contains two gateways and their backends. The simulated models are served by OpenShift AI as KServe InferenceServices:
 
 ----
-                               namespace: praxis
-                 +--------------------------------------------------------+
- Route --------->| praxis-basics  listener web      --+                   |
- Route (limited)>|  (Praxis core) listener limited  --+--> backend-a/b/c  |  echo servers
-                 |                                                        |
- Route --------->| praxis-ai      (Praxis AI) --+--> granite-0, granite-1 |  simulated LLMs
-                 |                              +--> qwen                 |
-                 |                                                        |
-                 | ServiceMonitors --> OpenShift user workload monitoring |
-                 +--------------------------------------------------------+
+                                 project: praxis
+                 +-----------------------------------------------------------+
+ Route --------->| praxis-basics  listener web      --+                      |
+ Route (limited)>|  (Praxis core) listener limited  --+--> backend-a/b/c     |  echo servers
+                 |                                                           |
+ Route --------->| praxis-ai      (Praxis AI) --+--> granite-a, granite-b    |  InferenceServices
+                 |                              +--> qwen                    |  (OpenShift AI)
+                 |                                                           |
+                 | ServiceMonitors --> OpenShift user workload monitoring    |
+                 +-----------------------------------------------------------+
 ----
 
 == Learning objectives
@@ -39,7 +39,8 @@ By the end of this workshop, you'll be able to:
 * Explain how listeners, filter chains and pipelines fit together, and how a request flows through them
 * Configure path and header routing, weighted load balancing, rate limiting and active health checks
 * Reload gateway configuration from a ConfigMap without restarting pods, and see invalid changes rejected
-* Route OpenAI-compatible traffic by the `model` field in the request body
+* Serve simulated models with OpenShift AI as KServe InferenceServices
+* Route OpenAI-compatible traffic by the `model` field in the request body, and fail over between two deployments of the same model
 * Serve Anthropic Messages clients from OpenAI Chat Completions backends, including streaming
 * Monitor per-model token usage and time to first token with OpenShift monitoring
 
@@ -51,7 +52,7 @@ By the end of this workshop, you'll be able to:
 
 * What Praxis is and how it relates to Pingora and Praxis AI
 * Filters, chains and pipelines, and the life of a request
-* Deploy the echo servers and simulated models used in the later modules
+* Deploy the echo servers, and serve the simulated models with OpenShift AI
 
 === Module 2: Praxis basics (35 minutes)
 
@@ -62,8 +63,8 @@ By the end of this workshop, you'll be able to:
 
 === Module 3: Praxis AI gateway (35 minutes)
 
-* Deploy Praxis AI in front of the simulated models
-* Route by model, balance across model pods, and handle pod failures
+* Deploy Praxis AI in front of the models served by OpenShift AI
+* Route by model, balance across two InferenceServices, and fail over when one stops
 * Translate Anthropic Messages to OpenAI Chat Completions
 * Token and time-to-first-token metrics
 * Exercise: add a new model with zero downtime
@@ -72,6 +73,6 @@ By the end of this workshop, you'll be able to:
 
 When you finish, you'll have:
 
-* A working Praxis core gateway and a working Praxis AI gateway on OpenShift
+* A working Praxis core gateway, and a working Praxis AI gateway in front of models served by OpenShift AI
 * Hands-on experience with the configuration patterns you would use in production
 * A clear picture of what Praxis core does and what Praxis AI adds on top

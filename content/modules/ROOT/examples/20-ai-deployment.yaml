@@ -37,9 +37,14 @@ spec:
               path: /healthy
               port: metrics
             periodSeconds: 10
+          # Readiness uses /healthy, not /ready. /ready returns 503 when any
+          # cluster has no healthy endpoints, so one stopped model would take
+          # the whole gateway out of its Route. In Praxis 0.7.5 it also keeps
+          # reporting the endpoints the pod started with after a hot reload.
+          # Use /ready for monitoring instead.
           readinessProbe:
             httpGet:
-              path: /ready
+              path: /healthy
               port: metrics
             periodSeconds: 5
           resources:

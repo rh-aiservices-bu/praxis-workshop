@@ -1,0 +1,23 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: granite-b
+  namespace: praxis
+  labels:
+    opendatahub.io/dashboard: "true"
+    app.kubernetes.io/part-of: praxis-lab
+  annotations:
+    openshift.io/display-name: granite-3.1-8b-instruct (b)
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    model:
+      modelFormat:
+        name: llm-d-sim
+      runtime: llm-d-inference-sim
+      args:
+        - --model=granite-3.1-8b-instruct
+        - --time-to-first-token=150ms
+        - --inter-token-latency=20ms

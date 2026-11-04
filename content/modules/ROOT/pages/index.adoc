@@ -1,9 +1,9 @@
-= Praxis on OpenShift: from proxy basics to an AI gateway
+= Praxis on OpenShift AI: from proxy basics to an AI gateway
 include::partial$_attributes.adoc[]
 
-Welcome to the Praxis on OpenShift workshop!
+Welcome to the Praxis on OpenShift AI workshop!
 
-link:https://github.com/praxis-proxy/praxis[Praxis^] is an open source framework for building proxy servers, written in Rust. link:https://github.com/praxis-proxy/ai[Praxis AI^] is an AI gateway built on it. In this workshop you run both on Red Hat OpenShift, in front of echo servers and simulated large language models (LLMs).
+link:https://github.com/praxis-proxy/praxis[Praxis^] is an open source framework for building proxy servers, written in Rust. link:https://github.com/praxis-proxy/ai[Praxis AI^] is an AI gateway built on it. In this workshop you run both on Red Hat OpenShift AI, in front of echo servers and simulated large language models (LLMs) served by OpenShift AI model serving.
 
 == What you'll learn
 
@@ -12,12 +12,13 @@ In this workshop, you will:
 * Understand how Praxis turns YAML configuration into a filter pipeline
 * Route, load balance, rate limit and health-check traffic with Praxis core
 * Change gateway behavior live by editing a ConfigMap, with no restart
-* Route OpenAI and Anthropic API traffic to models by the model named in the request
+* Serve simulated models with OpenShift AI as KServe InferenceServices
+* Route OpenAI and Anthropic API traffic to those models by the model named in the request
 * Measure tokens and time to first token per model in OpenShift monitoring
 
 == Who this is for
 
-This workshop is designed for platform engineers and architects who want to understand Praxis and how it can serve as an AI gateway on OpenShift.
+This workshop is designed for platform engineers and architects who want to understand Praxis and how it can serve as an AI gateway in front of models on OpenShift AI.
 
 **Experience level**: Intermediate
 
@@ -27,15 +28,16 @@ Before starting this workshop, you should have:
 
 * Comfort with the `oc` command line and basic Kubernetes objects (pods, Services, ConfigMaps)
 * A general idea of what a reverse proxy does
-* Some familiarity with LLM APIs such as OpenAI Chat Completions (helpful, not required)
+* Some familiarity with LLM APIs such as OpenAI Chat Completions, and with OpenShift AI model serving (helpful, not required)
 
 == Workshop environment
 
-You work on an OpenShift cluster with cluster-admin access. Everything you create goes into one namespace, `{namespace}`. No GPUs are used: the models are CPU-only simulators.
+You work on an OpenShift cluster with Red Hat OpenShift AI installed, and cluster-admin access. Everything you create goes into one project, `{namespace}`. No GPUs are used: the models are CPU-only simulators.
 
 You will have access to:
 
 * OpenShift console: link:{console_url}[{console_url}^]
+* OpenShift AI dashboard: link:{rhoai_url}[{rhoai_url}^]
 * Username: {admin_user}
 * Password: {admin_password}
 

@@ -3,8 +3,10 @@
 A hands-on introduction to [Praxis](https://github.com/praxis-proxy/praxis),
 the Rust proxy framework, and
 [Praxis AI](https://github.com/praxis-proxy/ai), the AI gateway built on it.
-The whole lab runs on OpenShift with published images and simulated models:
-no local build and no GPUs.
+The whole lab runs on Red Hat OpenShift AI, with published images and
+simulated models served as KServe InferenceServices: no local build and no
+GPUs. OpenShift AI 3.x with KServe is a prerequisite; `openshift/prereqs/`
+installs it if needed.
 
 This folder holds the source material. The same lab, formatted as a Red Hat
 Showroom site, is at the root of this repository (see

@@ -378,5 +378,14 @@ and [docs/filters/extensions.md](https://github.com/praxis-proxy/praxis/blob/mai
   OpenShift's default `restricted-v2`: random non-root UID, read-only root
   filesystem, all capabilities dropped. Praxis only rejects UID 0. Verified
   in the lab.
-- **Probes and metrics.** Point liveness at `/healthy` and readiness at
-  `/ready` on the metrics port (9902), and scrape `/metrics` with Prometheus.
+- **Probes and metrics.** Point liveness at `/healthy` on the metrics port
+  (9902), and scrape `/metrics` with Prometheus. `/ready` works as a
+  readiness probe for a gateway with one backend cluster, but not for an AI
+  gateway with many models: it fails as soon as any one cluster has no
+  healthy endpoints, and in 0.7.5 it doesn't follow hot reloads. Use
+  `/healthy` for readiness there.
+- **Models on OpenShift AI.** KServe serves each InferenceService at
+  `<name>-predictor.<namespace>.svc.cluster.local`. In the default
+  RawDeployment mode that Service is headless, so Praxis connects to the
+  model container's port (8000 for the lab's simulator), and the name goes in
+  `trusted_private_endpoints` like any other private backend.

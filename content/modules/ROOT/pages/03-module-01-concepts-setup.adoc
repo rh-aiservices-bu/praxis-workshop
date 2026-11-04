@@ -4,7 +4,7 @@ include::partial$_attributes.adoc[]
 :toc: macro
 :toclevels: 1
 
-Before you route any traffic, you need a mental model of how Praxis works. In this module you learn the core ideas, then deploy the backends the rest of the workshop uses: three echo servers and two simulated models.
+Before you route any traffic, you need a mental model of how Praxis works. In this module you learn the core ideas, then deploy the backends the rest of the workshop uses: three echo servers, and simulated models served by OpenShift AI.
 
 toc::[]
 
@@ -15,7 +15,7 @@ By the end of this module, you'll be able to:
 * Describe what Praxis is, and how it relates to Pingora and Praxis AI
 * Explain the idea that everything in Praxis is a filter
 * Trace a request through a Praxis pipeline
-* Deploy the backends a Praxis gateway will route to: echo servers and simulated LLMs
+* Deploy the backends a Praxis gateway will route to: echo servers, and simulated LLMs served by OpenShift AI as InferenceServices
 
 == What Praxis is
 
@@ -148,77 +148,94 @@ backend-c-5b8c7d9f6-p4k7m    1/1     Running   0          30s
 
 * All three pods are `Running` and `1/1` ready
 
-== Exercise 2: Deploy the simulated models
+== Exercise 2: Serve the simulated models with OpenShift AI
 
-Module 3 uses the link:https://github.com/llm-d/llm-d-inference-sim[llm-d inference simulator^], a CPU-only stand-in for vLLM. It serves the OpenAI and Anthropic APIs, reports token usage, and simulates time to first token and per-token latency. It needs no GPU and downloads no model.
+Module 3 needs models to route to. You serve them the way you would serve any model on OpenShift AI: as KServe **InferenceServices**. Instead of a real model server such as vLLM, they run the link:https://github.com/llm-d/llm-d-inference-sim[llm-d inference simulator^], a CPU-only stand-in for vLLM. It serves the OpenAI and Anthropic APIs, reports token usage, and simulates time to first token and per-token latency. It needs no GPU and downloads no model.
 
-You deploy two models, set up two different ways on purpose:
+You create two kinds of object:
 
-* **`granite-3.1-8b-instruct`** runs as a StatefulSet with 2 pods behind a *headless* Service. Each pod gets its own DNS name, so Praxis can balance and health-check each pod itself. Time to first token: 150 ms.
-* **`qwen3-8b`** runs as an ordinary Deployment behind a regular ClusterIP Service, so Kubernetes balances behind one address. Time to first token: 300 ms.
+* A **ServingRuntime** describes how to run a model server: the container image, its arguments and its resources. You create one for the simulator.
+* An **InferenceService** deploys one model with a runtime. KServe turns each one into a Deployment and a Service named `<name>-predictor`.
 
-. Create the headless Service for granite. `clusterIP: None` makes DNS return each pod individually, so the pods are reachable as `granite-0.granite.praxis.svc.cluster.local` and `granite-1.granite.praxis.svc.cluster.local`:
+You deploy three InferenceServices:
+
+* **`granite-a`** and **`granite-b`** both serve `granite-3.1-8b-instruct`, with 150 ms to first token. Running the same model twice is like running it in two zones or on two clusters. In Module 3, Praxis balances between them and fails over when one stops.
+* **`qwen`** serves `qwen3-8b`, with 300 ms to first token.
+
+. Create the ServingRuntime for the simulator. It runs the simulator image on port 8000, sets `POD_NAME` so every reply carries an `x-inference-pod` header naming the pod, and sets `NVIDIA_VISIBLE_DEVICES=void` so no GPU is ever attached. The `opendatahub.io/dashboard` label makes it visible in the OpenShift AI dashboard:
 +
 [source,role="execute"]
 ----
 cat << 'EOF' | oc apply -f -
-include::example$10-granite-service.yaml[]
+include::example$10-serving-runtime.yaml[]
 EOF
 ----
 
-. Create the granite StatefulSet. It runs 2 simulator pods with stable names, serving `granite-3.1-8b-instruct` with 150 ms to first token and 20 ms per token. `POD_NAME` makes each reply carry an `x-inference-pod` header naming the pod:
+. Create the `granite-a` InferenceService. It uses the simulator runtime and adds its own arguments: the model name and the simulated latency:
 +
 [source,role="execute"]
 ----
 cat << 'EOF' | oc apply -f -
-include::example$10-granite-statefulset.yaml[]
+include::example$11-granite-a.yaml[]
 EOF
 ----
 
-. Create an ordinary ClusterIP Service for qwen. It has one address, and Kubernetes chooses the pod behind it:
+. Create `granite-b`, a second deployment of the same model:
 +
 [source,role="execute"]
 ----
 cat << 'EOF' | oc apply -f -
-include::example$10-qwen-service.yaml[]
+include::example$11-granite-b.yaml[]
 EOF
 ----
 
-. Create the qwen Deployment. It runs 1 simulator pod serving `qwen3-8b` with 300 ms to first token and 30 ms per token:
+. Create the `qwen` InferenceService:
 +
 [source,role="execute"]
 ----
 cat << 'EOF' | oc apply -f -
-include::example$10-qwen-deployment.yaml[]
+include::example$11-qwen.yaml[]
 EOF
 ----
 
-. Wait for them to be ready:
+. Wait for all three to be ready:
 +
 [source,role="execute"]
 ----
-oc rollout status statefulset/granite --timeout=120s
-oc rollout status deploy/qwen --timeout=120s
+oc wait --for=condition=Ready inferenceservice --all --timeout=300s
 ----
 
 === Verify
 
 [source,role="execute"]
 ----
-oc get pods -l 'app in (granite,qwen)'
+oc get inferenceservice
+oc get pods -l 'serving.kserve.io/inferenceservice in (granite-a,granite-b,qwen)'
 ----
 
 Expected output (pod names vary):
 
 ----
-NAME                    READY   STATUS    RESTARTS   AGE
-granite-0               1/1     Running   0          20s
-granite-1               1/1     Running   0          20s
-qwen-77579855fb-9gvhw   1/1     Running   0          20s
+NAME        URL                                                   READY   PREV   LATEST   PREVROLLEDOUTREVISION   LATESTREADYREVISION   AGE
+granite-a   http://granite-a-predictor.praxis.svc.cluster.local   True                                                                  40s
+granite-b   http://granite-b-predictor.praxis.svc.cluster.local   True                                                                  40s
+qwen        http://qwen-predictor.praxis.svc.cluster.local        True                                                                  40s
+NAME                                   READY   STATUS    RESTARTS   AGE
+granite-a-predictor-5895f7b954-9sltf   3/3     Running   0          40s
+granite-b-predictor-6d8fd8fdbc-dplqd   3/3     Running   0          40s
+qwen-predictor-996f876c8-vfp89         3/3     Running   0          40s
 ----
 
-* `granite-0` and `granite-1` are running: the StatefulSet's pods have stable names
-* `qwen` is running with a generated pod name
+* All three InferenceServices are `READY True`
+* Each model's address is `<name>-predictor.praxis.svc.cluster.local`, which is what Praxis connects to in Module 3
+* Each pod shows `3/3`: KServe adds two containers next to the simulator, `kube-rbac-proxy`, which serves an authenticated TLS endpoint, and a KServe `agent`
+
+Open the **OpenShift AI dashboard** at link:{rhoai_url}[{rhoai_url}^] and go to the `praxis` project. The three models appear under the project's deployed models, served by the "llm-d inference simulator (CPU)" runtime.
+
+[NOTE]
+====
+In OpenShift AI's default RawDeployment mode, KServe makes each `<name>-predictor` Service **headless**: the name resolves straight to the pod's IP address. Clients connect to the container port, 8000, rather than the Service port. Module 3's gateway configuration uses port 8000 for this reason.
+====
 
 == Troubleshooting
 
@@ -230,6 +247,10 @@ qwen-77579855fb-9gvhw   1/1     Running   0          20s
 
 **Solution**: Run `oc describe pod <pod-name>` and check the events. The cluster needs outbound access to `ghcr.io` and `docker.io`.
 
+**Issue**: `error: the server doesn't have a resource type "inferenceservice"`
+
+**Solution**: OpenShift AI with KServe isn't installed on this cluster. It's a prerequisite of the workshop; see xref:02-details.adoc#_environment_access[Workshop details].
+
 == Learning outcomes
 
 By completing this module, you should now understand:
@@ -238,7 +259,8 @@ By completing this module, you should now understand:
 * ✓ Every behavior is a filter, and listeners run pipelines built from named chains
 * ✓ The router chooses a cluster and the load balancer chooses an endpoint
 * ✓ Request filters run in order, response filters in reverse, and any filter can answer early
+* ✓ On OpenShift AI, a ServingRuntime describes a model server and an InferenceService deploys a model with it
 
 == Module summary
 
-You learned the ideas behind Praxis and deployed the backends for the rest of the workshop: three echo servers and two simulated models. Next, in xref:04-module-02-praxis-basics.adoc[Module 2: Praxis basics], you deploy Praxis core and put these ideas to work.
+You learned the ideas behind Praxis and deployed the backends for the rest of the workshop: three echo servers, and three simulated models served by OpenShift AI. Next, in xref:04-module-02-praxis-basics.adoc[Module 2: Praxis basics], you deploy Praxis core and put these ideas to work.

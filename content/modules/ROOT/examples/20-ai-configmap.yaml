@@ -12,17 +12,18 @@ data:
       metrics_address: "0.0.0.0:9902"
       verbose: true
 
-    # Top-level cluster with health checks on each granite pod. Praxis AI
-    # 0.9.0 is built on core 0.7.5, so the load_balancer entry below must
-    # repeat the endpoints.
+    # Top-level cluster with health checks on each granite InferenceService.
+    # Praxis AI 0.9.0 is built on core 0.7.5, so the load_balancer entry below
+    # must repeat the endpoints. KServe predictor Services are headless, so each
+    # name resolves to the pod IP and Praxis connects to the container port, 8000.
     clusters:
       - name: granite
         endpoints:
-          - "granite-0.granite.praxis.svc.cluster.local:8000"
-          - "granite-1.granite.praxis.svc.cluster.local:8000"
+          - "granite-a-predictor.praxis.svc.cluster.local:8000"
+          - "granite-b-predictor.praxis.svc.cluster.local:8000"
         trusted_private_endpoints:
-          - granite-0.granite.praxis.svc.cluster.local
-          - granite-1.granite.praxis.svc.cluster.local
+          - granite-a-predictor.praxis.svc.cluster.local
+          - granite-b-predictor.praxis.svc.cluster.local
         health_check:
           type: http
           path: "/health"
@@ -97,6 +98,11 @@ data:
                   x-model: qwen3-8b
                 cluster: qwen
 
+          # OpenAI streams only report token usage if the client asks for it
+          # (stream_options.include_usage). This sets it on every streaming
+          # chat request, so token_count can count streamed tokens too.
+          - filter: stream_usage_inject
+
           # Response filters run in reverse, so token_count reads the
           # backend's OpenAI-format usage before (for Anthropic clients) the
           # body is translated back. It publishes per-model token metrics
@@ -111,17 +117,17 @@ data:
 
           - filter: load_balancer
             clusters:
-              # Praxis balances across the two granite pods itself.
+              # Praxis balances across the two granite InferenceServices.
               - name: granite
                 load_balancer_strategy: round_robin
                 endpoints:
-                  - "granite-0.granite.praxis.svc.cluster.local:8000"
-                  - "granite-1.granite.praxis.svc.cluster.local:8000"
+                  - "granite-a-predictor.praxis.svc.cluster.local:8000"
+                  - "granite-b-predictor.praxis.svc.cluster.local:8000"
                 trusted_private_endpoints:
-                  - granite-0.granite.praxis.svc.cluster.local
-                  - granite-1.granite.praxis.svc.cluster.local
+                  - granite-a-predictor.praxis.svc.cluster.local
+                  - granite-b-predictor.praxis.svc.cluster.local
               - name: qwen
                 endpoints:
-                  - "qwen.praxis.svc.cluster.local:8000"
+                  - "qwen-predictor.praxis.svc.cluster.local:8000"
                 trusted_private_endpoints:
-                  - qwen.praxis.svc.cluster.local
+                  - qwen-predictor.praxis.svc.cluster.local

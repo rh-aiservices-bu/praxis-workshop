@@ -4,7 +4,7 @@ include::partial$_attributes.adoc[]
 :toc: macro
 :toclevels: 1
 
-Praxis AI {praxis_ai_version} is Praxis core plus filters that understand AI traffic. Everything from Module 2 still applies: the same listeners, chains, router, load balancer, health checks, hot reload and metrics. In this module you put it in front of the two simulated models and use what it adds.
+Praxis AI {praxis_ai_version} is Praxis core plus filters that understand AI traffic. Everything from Module 2 still applies: the same listeners, chains, router, load balancer, health checks, hot reload and metrics. In this module you put it in front of the simulated models served by OpenShift AI and use what it adds.
 
 toc::[]
 
@@ -13,7 +13,7 @@ toc::[]
 By the end of this module, you'll be able to:
 
 * Route OpenAI-compatible requests by the `model` field in the request body
-* Explain the difference between Praxis balancing model pods and Kubernetes balancing them
+* Balance and fail over between two InferenceServices that serve the same model
 * Serve Anthropic Messages clients from OpenAI Chat Completions backends, including streaming
 * Monitor token usage and time to first token per model
 
@@ -24,9 +24,9 @@ The gateway is five pieces, like the one in Module 2: the Praxis AI configuratio
 * **`observability`**: `request_id` and `access_log`, as in Module 2
 * **`classify`**: work out which AI API the request uses and which model it asks for
 * **`translate`**: convert Anthropic Messages requests and responses to and from OpenAI Chat Completions
-* **`routing`**: `router`, token metrics and `load_balancer`
+* **`routing`**: `router`, token accounting and `load_balancer`
 
-. Create the ConfigMap that holds the Praxis AI configuration: the listener and its four chains, routes for the two models, a health check on each granite pod, and a `load_balancer` cluster per model:
+. Create the ConfigMap that holds the Praxis AI configuration: the listener and its four chains, routes for the two models, a health check on each granite InferenceService, and a `load_balancer` cluster per model that points at its KServe predictor address, such as `granite-a-predictor.praxis.svc.cluster.local:8000`:
 +
 [source,role="execute"]
 ----
@@ -35,7 +35,7 @@ include::example$20-ai-configmap.yaml[]
 EOF
 ----
 
-. Create the Deployment that runs Praxis AI {praxis_ai_version}. It starts `praxis-ai` with the configuration from the ConfigMap, mounted as a directory so that updates reach the running pod, with liveness and readiness probes on the metrics port 9902:
+. Create the Deployment that runs Praxis AI {praxis_ai_version}. It starts `praxis-ai` with the configuration from the ConfigMap, mounted as a directory so that updates reach the running pod. Its liveness and readiness probes both use `/healthy` on the metrics port 9902; the note below explains why:
 +
 [source,role="execute"]
 ----
@@ -91,6 +91,11 @@ chat() {  # chat <model> [extra curl args...]
 echo "AI gateway: $AI"
 ----
 
+[NOTE]
+====
+Unlike the Module 2 gateway, this Deployment's readiness probe uses `/healthy`, not `/ready`. `/ready` returns 503 when any cluster has no healthy endpoints, so with many models, one stopped model would take the whole gateway out of its Route. In Praxis {praxis_version}, `/ready` also keeps reporting the endpoints the pod started with after a hot reload. Use `/ready` to monitor backend health instead.
+====
+
 === Verify
 
 [source,role="execute"]
@@ -106,7 +111,7 @@ INFO ... HTTP listener registered name=ai-gateway address=0.0.0.0:8080 tls=false
 ----
 
 * The `ai-gateway` listener is registered
-* A health check task is running for the two granite pods
+* A health check task is running for the two granite InferenceServices
 
 == Exercise 1: One endpoint, many models
 
@@ -150,40 +155,51 @@ Expected output (response bodies trimmed):
 {"id":"chatcmpl-...","model":"granite-3.1-8b-instruct","object":"chat.completion",...
 {"id":"chatcmpl-...","model":"qwen3-8b","object":"chat.completion",...
 HTTP/1.1 404 Not Found
-x-inference-pod: granite-1
+x-inference-pod: granite-b-predictor-6d8fd8fdbc-dplqd
 ----
 
 * Each model answers its own requests
 * An unknown model gets a 404, because no route matches it
 * The request with `X-Model: qwen3-8b` still reached a granite pod: routing follows the body, not the client's header
 
-== Exercise 2: Per-pod balancing and failures
+== Exercise 2: Balancing and failover across InferenceServices
 
-The simulator returns an `x-inference-pod` response header naming the pod that answered.
+`granite-a` and `granite-b` are two InferenceServices serving the same model. Praxis lists both in its `granite` cluster, balances between them, and health-checks each one, so it can fail over when one stops. The simulator returns an `x-inference-pod` response header naming the pod that answered.
 
-. Compare the two models:
+. Send four requests for granite and two for qwen:
 +
 [source,role="execute"]
 ----
 for i in 1 2 3 4; do chat granite-3.1-8b-instruct -D - -o /dev/null | grep -i x-inference-pod; done
-for i in 1 2 3 4; do chat qwen3-8b -D - -o /dev/null | grep -i x-inference-pod; done
+for i in 1 2; do chat qwen3-8b -D - -o /dev/null | grep -i x-inference-pod; done
 ----
 
-. Remove one granite pod, then check readiness and traffic:
+. Stop `granite-b`. The `serving.kserve.io/stop` annotation is what the **Stop** action in the OpenShift AI dashboard sets: KServe removes the model's pod and keeps its definition.
 +
 [source,role="execute"]
 ----
-oc scale statefulset/granite --replicas=1
-sleep 8
-oc exec deploy/praxis-ai -- wget -qO- http://127.0.0.1:9902/ready; echo
+oc annotate inferenceservice granite-b serving.kserve.io/stop=true --overwrite
+sleep 10
+oc get inferenceservice granite-b
+----
+
+. Check how many granite endpoints Praxis considers healthy, and send traffic. Read the metrics rather than `/ready`, which can be out of date after a hot reload (see the note under "Deploy the Praxis AI gateway"):
++
+[source,role="execute"]
+----
+oc exec deploy/praxis-ai -- wget -qO- http://127.0.0.1:9902/metrics | grep '^praxis_upstream_healthy_endpoints'
 for i in 1 2 3 4; do chat granite-3.1-8b-instruct -D - -o /dev/null | grep -i x-inference-pod; done
 ----
 
-. Bring it back:
+. Start `granite-b` again. Its new pod has a new IP address, and Praxis caches DNS answers for 60 seconds, so wait a minute before sending traffic:
 +
 [source,role="execute"]
 ----
-oc scale statefulset/granite --replicas=2
+oc annotate inferenceservice granite-b serving.kserve.io/stop=false --overwrite
+oc wait --for=condition=Ready inferenceservice/granite-b --timeout=180s
+sleep 60
+oc exec deploy/praxis-ai -- wget -qO- http://127.0.0.1:9902/metrics | grep '^praxis_upstream_healthy_endpoints'
+for i in 1 2 3 4; do chat granite-3.1-8b-instruct -D - -o /dev/null | grep -i x-inference-pod; done
 ----
 
 . Errors from the model itself pass straight through. The simulator fails on demand when you send an `X-Return-Error` header:
@@ -195,35 +211,48 @@ chat qwen3-8b -H 'X-Return-Error: 429' -w '\n%{http_code}\n'
 
 === Verify
 
-Expected output from the comparison:
+Expected output from the first step (pod names vary):
 
 ----
-x-inference-pod: granite-0
-x-inference-pod: granite-1
-x-inference-pod: granite-0
-x-inference-pod: granite-1
-x-inference-pod: qwen-77579855fb-9gvhw
-x-inference-pod: qwen-77579855fb-9gvhw
-x-inference-pod: qwen-77579855fb-9gvhw
-x-inference-pod: qwen-77579855fb-9gvhw
+x-inference-pod: granite-a-predictor-5895f7b954-9sltf
+x-inference-pod: granite-b-predictor-6d8fd8fdbc-dplqd
+x-inference-pod: granite-a-predictor-5895f7b954-9sltf
+x-inference-pod: granite-b-predictor-6d8fd8fdbc-dplqd
+x-inference-pod: qwen-predictor-996f876c8-vfp89
+x-inference-pod: qwen-predictor-996f876c8-vfp89
 ----
 
-Expected output with one granite pod:
+Expected output while `granite-b` is stopped:
 
 ----
-{"status":"ok","clusters":{"total":1,"healthy":1,"degraded":0,"detail":{"granite":{"healthy":1,"unhealthy":1,"total":2}}}}
-x-inference-pod: granite-0
-x-inference-pod: granite-0
-x-inference-pod: granite-0
-x-inference-pod: granite-0
+NAME        URL   READY   PREV   LATEST   PREVROLLEDOUTREVISION   LATESTREADYREVISION   AGE
+granite-b         False                                                                 33m
+praxis_upstream_healthy_endpoints{cluster="granite"} 1
+x-inference-pod: granite-a-predictor-5895f7b954-9sltf
+x-inference-pod: granite-a-predictor-5895f7b954-9sltf
+x-inference-pod: granite-a-predictor-5895f7b954-9sltf
+x-inference-pod: granite-a-predictor-5895f7b954-9sltf
 ----
 
-* **granite** alternates between pods. Its headless Service gives each pod a DNS name, so Praxis lists both pods as endpoints, chooses between them and health-checks each one.
-* **qwen** goes through an ordinary ClusterIP Service. Praxis sees one address and Kubernetes chooses the pod behind it.
-* When `granite-1` disappeared, Praxis marked it unhealthy and sent everything to `granite-0`
+Expected output after the restart:
+
+----
+praxis_upstream_healthy_endpoints{cluster="granite"} 2
+x-inference-pod: granite-b-predictor-6d8fd8fdbc-pclhx
+x-inference-pod: granite-a-predictor-5895f7b954-9sltf
+x-inference-pod: granite-b-predictor-6d8fd8fdbc-pclhx
+x-inference-pod: granite-a-predictor-5895f7b954-9sltf
+----
+
+* Praxis alternates between `granite-a` and `granite-b`: round robin across two InferenceServices
+* When `granite-b` stopped, its health check failed, Praxis marked it unhealthy and sent everything to `granite-a`
+* After the restart, `granite-b` rejoins: its new pod has a new name
 * The simulated 429 reached the client unchanged
 
-Per-pod endpoints give you the proxy's own balancing and health checks. With llm-d, they also allow model-aware pod picking.
+[NOTE]
+====
+KServe's predictor Services are headless, so a restarted model gets a new pod IP address behind the same name. Praxis {praxis_version} caches DNS answers for 60 seconds, so for up to a minute after a restart it can still send requests to the old address, and they fail with a 502 or 504. That's why the restart step waits 60 seconds before sending traffic.
+====
 
 == Exercise 3: Streaming
 
@@ -313,6 +342,8 @@ For clients that send such features by default, the `allow_lossy_features` optio
 
 AI cost and capacity are measured in tokens. The `token_count` and `time_to_first_token` filters turn what the backend reports into per-model metrics.
 
+Streaming needs one more piece. An OpenAI-compatible server only reports token usage in a stream if the client asks for it, with `stream_options.include_usage`. Most clients don't, so the gateway's `stream_usage_inject` filter sets it on every streaming chat request. That way streamed tokens are counted no matter which client sent them.
+
 . Generate some streaming traffic for both models:
 +
 [source,role="execute"]
@@ -344,17 +375,17 @@ sum by (model) (rate(praxis_ai_ttft_seconds_sum[5m])) / sum by (model) (rate(pra
 Expected output (counts vary):
 
 ----
-praxis_ai_prompt_tokens_total{model="qwen3-8b",cluster="qwen"} 12
-praxis_ai_prompt_tokens_total{model="granite-3.1-8b-instruct",cluster="granite"} 9
-praxis_ai_output_tokens_total{model="granite-3.1-8b-instruct",cluster="granite"} 4
-praxis_ai_output_tokens_total{model="qwen3-8b",cluster="qwen"} 9
-praxis_ai_ttft_seconds_sum{model="qwen3-8b",cluster="qwen"} 0.60859592
-praxis_ai_ttft_seconds_count{model="qwen3-8b",cluster="qwen"} 2
-praxis_ai_ttft_seconds_sum{model="granite-3.1-8b-instruct",cluster="granite"} 0.154153391
-praxis_ai_ttft_seconds_count{model="granite-3.1-8b-instruct",cluster="granite"} 1
+praxis_ai_prompt_tokens_total{model="granite-3.1-8b-instruct",cluster="granite"} 30
+praxis_ai_prompt_tokens_total{model="qwen3-8b",cluster="qwen"} 42
+praxis_ai_output_tokens_total{model="qwen3-8b",cluster="qwen"} 62
+praxis_ai_output_tokens_total{model="granite-3.1-8b-instruct",cluster="granite"} 89
+praxis_ai_ttft_seconds_sum{model="qwen3-8b",cluster="qwen"} 2.7425160180000003
+praxis_ai_ttft_seconds_count{model="qwen3-8b",cluster="qwen"} 9
+praxis_ai_ttft_seconds_sum{model="granite-3.1-8b-instruct",cluster="granite"} 1.2391847950000001
+praxis_ai_ttft_seconds_count{model="granite-3.1-8b-instruct",cluster="granite"} 8
 ----
 
-* Token counters are labeled by **model** and **cluster**
+* Token counters are labeled by **model** and **cluster**, and include the streamed requests
 * Time to first token (sum divided by count) is about 0.15 s for granite and 0.30 s for qwen, matching the latency the simulators were configured with
 
 [NOTE]
@@ -366,14 +397,14 @@ Praxis AI also has a `token_usage_headers` filter, but it can't add token header
 
 Bring a third model online while the gateway keeps serving.
 
-. Deploy a simulated `llama-3.1-8b-instruct`:
+. Serve a simulated `llama-3.1-8b-instruct` as a new InferenceService:
 +
 [source,role="execute"]
 ----
 cat << 'EOF' | oc apply -f -
 include::example$30-llama.yaml[]
 EOF
-oc rollout status deploy/llama --timeout=120s
+oc wait --for=condition=Ready inferenceservice/llama --timeout=180s
 ----
 
 . Confirm the gateway doesn't know it yet:
@@ -393,13 +424,13 @@ oc edit configmap praxis-ai-config
 Add two things:
 +
 * A route in the `router` filter: `x-model: llama-3.1-8b-instruct` to `cluster: llama`
-* A cluster in the `load_balancer` filter named `llama`, with endpoint `llama.praxis.svc.cluster.local:8000`, and the same host name in `trusted_private_endpoints`
+* A cluster in the `load_balancer` filter named `llama`, with endpoint `llama-predictor.praxis.svc.cluster.local:8000`, and the same host name in `trusted_private_endpoints`
 
-. Wait for the reload, then ask the new model:
+. Wait until the new route works, then ask the new model. The kubelet copies ConfigMap changes into the pod on its own schedule, usually within a minute, so the loop waits for a successful reply:
 +
 [source,role="execute"]
 ----
-until oc logs deploy/praxis-ai --since=2m | grep -q 'reload complete'; do sleep 5; done
+until [ "$(chat llama-3.1-8b-instruct -o /dev/null -w '%{http_code}')" = 200 ]; do sleep 5; done
 chat llama-3.1-8b-instruct | head -c 200; echo
 ----
 
@@ -469,6 +500,10 @@ HTTP/1.1 404 Not Found
 
 **Solution**: Check `oc logs deploy/praxis-ai | grep -i reload`. A `reload failed` line explains what was wrong, and the old configuration stays in place. A frequent cause is a route that names a cluster missing from the `load_balancer` filter.
 
+**Issue**: A request fails with 502 or 504 right after a model restarts
+
+**Solution**: The restarted model has a new pod IP address, and Praxis caches DNS answers for 60 seconds. Wait a minute and retry.
+
 **Issue**: `chat: command not found`
 
 **Solution**: The terminal reconnected and lost the helper. Rerun the block in "Deploy the Praxis AI gateway" that defines `AI` and `chat`.
@@ -478,10 +513,10 @@ HTTP/1.1 404 Not Found
 By completing this module, you should now understand:
 
 * ✓ How Praxis AI applies the classify, promote, route pattern to the `model` in the request body
-* ✓ When to let Praxis balance model pods and when to let a Kubernetes Service do it
+* ✓ How Praxis balances and fails over between InferenceServices that serve the same model
 * ✓ How API translation lets Anthropic clients use OpenAI-only model servers
 * ✓ Why AI traffic is measured in tokens and time to first token, and where to see them
 
 == Module summary
 
-You ran Praxis AI as an AI gateway: one endpoint for many models, per-pod balancing and failover, streaming, Anthropic to OpenAI translation, and token metrics, and you added a model with no downtime. Continue to the xref:06-conclusion.adoc[Conclusion] for a recap and next steps.
+You ran Praxis AI as an AI gateway: one endpoint for many models served by OpenShift AI, balancing and failover across InferenceServices, streaming, Anthropic to OpenAI translation, and token metrics, and you added a model with no downtime. Continue to the xref:06-conclusion.adoc[Conclusion] for a recap and next steps.

@@ -1,16 +1,27 @@
-# Praxis on OpenShift Lab
+# Praxis on OpenShift AI Lab
 
-Learn Praxis end to end on OpenShift, in two parts:
+Learn Praxis end to end on OpenShift AI, in two parts:
 
 | Part | Gateway | Backends | You learn |
 |---|---|---|---|
 | **0. Basics** | Praxis core | echo servers | listeners, chains and pipelines; routing; load balancing; rate limiting; health checks; hot reload; metrics |
-| **1. AI gateway** | Praxis AI | simulated LLMs | routing on the model, per-pod balancing, streaming, Anthropic ⇄ OpenAI translation, token and time-to-first-token metrics |
+| **1. AI gateway** | Praxis AI | simulated LLMs served by OpenShift AI | routing on the model, balancing and failover across InferenceServices, streaming, Anthropic ⇄ OpenAI translation, token and time-to-first-token metrics |
 
-No GPUs are used. The LLMs are
+No GPUs are used. The LLMs are served by OpenShift AI as KServe
+InferenceServices, using a ServingRuntime for
 [llm-d-inference-sim](https://github.com/llm-d/llm-d-inference-sim), a
 CPU-only stand-in for vLLM that speaks the OpenAI and Anthropic APIs, reports
 token usage, and simulates realistic latency.
+
+**Prerequisite:** Red Hat OpenShift AI 3.x with KServe enabled. Tested with
+OpenShift 4.22 and OpenShift AI 3.5. If the cluster doesn't have it, install
+it with the files in [prereqs/](prereqs/):
+
+```console
+oc apply -f lab/openshift/prereqs/01-openshift-ai-operator.yaml
+oc -n redhat-ods-operator get csv -w      # wait for rhods-operator Succeeded
+oc apply -f lab/openshift/prereqs/02-datasciencecluster.yaml
+```
 
 Background reading: [../CONCEPTS.md](../CONCEPTS.md) (how Praxis works) and
 [../AI.md](../AI.md) (Praxis AI).
@@ -21,8 +32,8 @@ Background reading: [../CONCEPTS.md](../CONCEPTS.md) (how Praxis works) and
  Route ─────────►│ praxis-basics  listener web      ─┐                    │
  Route (limited)►│  (core 0.7.5)  listener limited  ─┴─► backend-a/b/c    │ echo (whoami)
                  │                                                        │
- Route ─────────►│ praxis-ai      (AI 0.9.0) ──┬─► granite-0, granite-1   │ granite-3.1-8b-instruct
-                 │                             └─► qwen                   │ qwen3-8b
+ Route ─────────►│ praxis-ai      (AI 0.9.0) ──┬─► granite-a, granite-b   │ InferenceServices
+                 │                             └─► qwen                   │ (OpenShift AI)
                  │                                                        │
                  │ ServiceMonitors ─► OpenShift user-workload monitoring  │
                  └────────────────────────────────────────────────────────┘
@@ -32,15 +43,17 @@ Background reading: [../CONCEPTS.md](../CONCEPTS.md) (how Praxis works) and
 |---|---|---|
 | `backend-a`, `-b`, `-c` | `docker.io/traefik/whoami:v1.10` | echo the request back; print `Name: backend-x` |
 | `praxis-basics` | `ghcr.io/praxis-proxy/praxis:0.7.5` | Part 0 gateway, ConfigMap `praxis-basics-config` |
-| `granite` | `ghcr.io/llm-d/llm-d-inference-sim:v1.1.0` | 2 pods with their own DNS names; time to first token 150 ms |
-| `qwen` | same | 1 pod behind an ordinary Service; time to first token 300 ms |
+| `llm-d-inference-sim` | ServingRuntime, `ghcr.io/llm-d/llm-d-inference-sim:v1.1.0` | how KServe runs the simulator |
+| `granite-a`, `granite-b` | InferenceServices | the same model, `granite-3.1-8b-instruct`, served twice; time to first token 150 ms |
+| `qwen` | InferenceService | `qwen3-8b`; time to first token 300 ms |
 | `praxis-ai` | `ghcr.io/praxis-proxy/ai:0.9.0` | Part 1 gateway, ConfigMap `praxis-ai-config` |
 
 **Guardrails:**
 - Everything lives in the `praxis` namespace.
 - The ResourceQuota `no-gpus` forbids requesting any GPU there.
-- Every container sets `NVIDIA_VISIBLE_DEVICES=void`, so the NVIDIA runtime
-  never hands it a GPU even on a GPU node.
+- Every container the lab defines, including the simulator's ServingRuntime,
+  sets `NVIDIA_VISIBLE_DEVICES=void`, so the NVIDIA runtime never hands it a
+  GPU even on a GPU node.
 - All pods run under OpenShift's default `restricted-v2` security context:
   random UID, read-only root filesystem, all capabilities dropped.
 
@@ -284,37 +297,40 @@ All OpenAI clients call the same URL. Praxis picks the backend from the
 This is the **classify → promote → route** pattern, the core way Praxis
 turns request content into routing decisions.
 
-## 9. Per-pod balancing and failures
+## 9. Balancing and failover across InferenceServices
 
 ```console
 for i in 1 2 3 4; do chat granite-3.1-8b-instruct -D - -o /dev/null | grep -i x-inference-pod; done
-for i in 1 2 3 4; do chat qwen3-8b -D - -o /dev/null | grep -i x-inference-pod; done
+for i in 1 2; do chat qwen3-8b -D - -o /dev/null | grep -i x-inference-pod; done
 ```
 
 The simulator answers with an `x-inference-pod` header naming the pod.
+`granite-a` and `granite-b` are two InferenceServices serving the same
+model, like one model deployed in two zones. Praxis lists both in its
+`granite` cluster, alternates between them, and health-checks each one.
 
-- **granite** alternates `granite-0` and `granite-1`. It's a StatefulSet
-  behind a *headless* Service, so each pod has its own DNS name. Praxis lists
-  both pods as endpoints, chooses between them, and health-checks each one.
-- **qwen** goes through an ordinary ClusterIP Service, like the Part 0
-  backends. Praxis sees one address, and Kubernetes chooses the pod behind
-  it.
-
-Per-pod endpoints give you the proxy's own balancing and health checks. With
-llm-d, they also allow model-aware pod picking.
-
-Now remove a granite pod:
+Now stop `granite-b`. The `serving.kserve.io/stop` annotation is what the
+**Stop** action in the OpenShift AI dashboard sets:
 
 ```console
-oc -n praxis scale statefulset/granite --replicas=1
-sleep 8
-oc -n praxis exec deploy/praxis-ai -- wget -qO- http://127.0.0.1:9902/ready; echo
+oc -n praxis annotate inferenceservice granite-b serving.kserve.io/stop=true --overwrite
+sleep 10
+oc -n praxis exec deploy/praxis-ai -- wget -qO- http://127.0.0.1:9902/metrics | grep '^praxis_upstream_healthy_endpoints'
 for i in 1 2 3 4; do chat granite-3.1-8b-instruct -D - -o /dev/null | grep -i x-inference-pod; done
-oc -n praxis scale statefulset/granite --replicas=2
+
+oc -n praxis annotate inferenceservice granite-b serving.kserve.io/stop=false --overwrite
+oc -n praxis wait --for=condition=Ready inferenceservice/granite-b --timeout=180s
+sleep 60
+for i in 1 2 3 4; do chat granite-3.1-8b-instruct -D - -o /dev/null | grep -i x-inference-pod; done
 ```
 
-`/ready` shows `granite: healthy 1, unhealthy 1`, and all traffic goes to
-`granite-0` until `granite-1` returns.
+While it's stopped, `praxis_upstream_healthy_endpoints{cluster="granite"}`
+is 1 and all traffic goes to `granite-a`. The metric is used instead of
+`/ready`, which can be out of date after a hot reload (finding 9). After the
+restart, `granite-b` rejoins with a new pod. Its predictor Service is
+headless, so the new pod has a new IP, and Praxis caches DNS answers for 60
+seconds: until then, requests sent to the old IP fail with a 502 or 504.
+That's why the restart waits 60 seconds before sending traffic.
 
 Errors from the model itself are passed through unchanged. The simulator
 can fail on demand:
@@ -377,7 +393,11 @@ served by vLLM, KServe or OpenShift AI that only speak OpenAI Chat.
 
 ## 12. Tokens and time to first token
 
-Generate some traffic, then read the AI metrics:
+OpenAI-compatible servers only report token usage in a stream when the
+client sets `stream_options.include_usage`. The gateway's
+`stream_usage_inject` filter sets it on every streaming chat request, so
+streamed tokens are counted for every client. Generate some streaming
+traffic, then read the AI metrics:
 
 ```console
 for m in granite-3.1-8b-instruct qwen3-8b; do for i in 1 2 3; do
@@ -405,22 +425,26 @@ sum by (model) (rate(praxis_ai_ttft_seconds_sum[5m])) / sum by (model) (rate(pra
 
 ## 13. Exercise: add a model with zero downtime
 
-1. Deploy a third simulated model:
+1. Serve a third simulated model as an InferenceService:
 
    ```console
    oc apply -f lab/openshift/30-llama.yaml
+   oc -n praxis wait --for=condition=Ready inferenceservice/llama --timeout=180s
    chat llama-3.1-8b-instruct -i | head -1        # 404: Praxis doesn't know it yet
    ```
 
 2. `oc -n praxis edit configmap praxis-ai-config` and add:
    - a route: `x-model: llama-3.1-8b-instruct` → `cluster: llama`
    - a `load_balancer` cluster `llama` with endpoint
-     `llama.praxis.svc.cluster.local:8000`, plus the same name in
+     `llama-predictor.praxis.svc.cluster.local:8000`, plus the same name in
      `trusted_private_endpoints`
 
-3. Wait for `reload complete` in `oc -n praxis logs deploy/praxis-ai`, then:
+3. Wait until the new route works, then ask the new model. The kubelet
+   copies ConfigMap changes into the pod on its own schedule, usually within
+   a minute:
 
    ```console
+   until [ "$(chat llama-3.1-8b-instruct -o /dev/null -w '%{http_code}')" = 200 ]; do sleep 5; done
    chat llama-3.1-8b-instruct | head -c 200; echo
    ```
 
@@ -470,10 +494,31 @@ Reset with `oc apply -f lab/openshift/20-praxis-ai.yaml` and
 8. **The `rate` key "resembles" `name`.** Praxis logs a possible-typo
    warning for `rate_limit`'s `rate` field. It's a false positive; the
    project's own example triggers it too.
-9. **OpenShift's defaults just work.** All images run unmodified under
-   `restricted-v2`: random UID, read-only root filesystem, no capabilities.
-   The only change needed was running whoami on port 8080, since a non-root
-   UID can't bind port 80.
+9. **Don't use `/ready` as the readiness probe for an AI gateway.** It
+   returns 503 when any cluster has no healthy endpoints, so one stopped
+   model takes the whole gateway out of its Route. In Praxis 0.7.5,
+   `/ready` also keeps reporting the endpoints the pod started with after a
+   hot reload, while the metrics show the real state (worth reporting
+   upstream). The AI gateway here uses `/healthy` for readiness.
+10. **KServe predictor Services are headless in RawDeployment mode.**
+    `<name>-predictor` resolves to the pod IP, so connect to the container
+    port (8000), not the Service port. With
+    `rawDeploymentServiceConfig: Headed` you'd get a ClusterIP Service and
+    use port 80 instead.
+11. **A restarted model gets a new IP address.** With headless predictor
+    Services and Praxis's 60-second DNS cache, requests can fail for up to a
+    minute after a model restarts.
+12. **Streamed tokens are only counted if usage is requested.** Add
+    `stream_usage_inject` so the gateway sets `include_usage` for every
+    client.
+13. **Wait for the effect, not the log line, after a ConfigMap change.**
+    The kubelet can take about a minute to deliver ConfigMap updates, and
+    an older `reload complete` line can mislead a script.
+14. **OpenShift's defaults just work.** All images run unmodified under
+    `restricted-v2`: random UID, read-only root filesystem, no
+    capabilities. KServe's added `kube-rbac-proxy` and `agent` containers
+    don't get in the way. The only change needed was running whoami on
+    port 8080, since a non-root UID can't bind port 80.
 
 ## Clean up
 

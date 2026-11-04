@@ -401,7 +401,7 @@ Name: backend-b
 * `/ready` reports one healthy and one unhealthy endpoint in `app`
 * All traffic goes to backend-b until backend-a recovers
 
-`/ready` is also the Deployment's readiness probe, and `/healthy` its liveness probe, both on the metrics port 9902.
+`/ready` is also the Deployment's readiness probe, and `/healthy` its liveness probe, both on the metrics port 9902. `/ready` returns 503 when any cluster has no healthy endpoints, which takes the pod out of its Route. That suits this gateway, whose only job is the `app` cluster; Module 3 explains why the AI gateway uses `/healthy` instead.
 
 == Exercise 6: Hot reload from the ConfigMap
 
@@ -415,12 +415,12 @@ oc get cm praxis-basics-config -o yaml \
   | sed 's/value: praxis$/value: praxis-reloaded/' | oc apply -f -
 ----
 
-. Wait for the reload. The kubelet updates the mounted ConfigMap, usually within a minute:
+. Wait for the change to take effect, then look at the reload in the log. The kubelet copies ConfigMap changes into the pod on its own schedule, usually within a minute, so the loop waits for the new header value itself:
 +
 [source,role="execute"]
 ----
-until oc logs deploy/praxis-basics --since=2m | grep -q 'reload complete'; do sleep 5; done
-oc logs deploy/praxis-basics --since=2m | grep -i reload
+until curl -si $B/app | grep -qi 'x-powered-by: praxis-reloaded'; do sleep 5; done
+oc logs deploy/praxis-basics --since=3m | grep -i reload
 ----
 
 . Check the header and the pod:

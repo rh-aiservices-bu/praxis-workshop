@@ -16,7 +16,8 @@ include::partial$_attributes.adoc[]
 
 This workshop was tested with:
 
-* Red Hat OpenShift {ocp_version}, single-node cluster
+* Red Hat OpenShift {ocp_version}, on CPU-only worker nodes
+* Red Hat OpenShift AI {rhoai_version}, with KServe model serving in its default RawDeployment mode
 * Praxis core {praxis_version} (`ghcr.io/praxis-proxy/praxis`)
 * Praxis AI {praxis_ai_version} (`ghcr.io/praxis-proxy/ai`)
 * llm-d inference simulator {sim_version} (`ghcr.io/llm-d/llm-d-inference-sim`)
@@ -28,7 +29,8 @@ All images are published, so nothing is built during the workshop. The Praxis im
 
 You need:
 
-* cluster-admin access, or a user who can create a namespace, ResourceQuota and ServiceMonitor
+* **Red Hat OpenShift AI 3.x with KServe enabled.** The environment provides it; the workshop doesn't install it. KServe must be `Managed` in the DataScienceCluster.
+* cluster-admin access, or a user who can create a project, ResourceQuota, ServingRuntime, InferenceService and ServiceMonitor
 * Outbound access from the cluster to `ghcr.io` and `docker.io` to pull images
 * User workload monitoring enabled, for the metrics steps in the OpenShift console
 
@@ -36,8 +38,8 @@ You need:
 
 The workshop never uses a GPU, even on a GPU node:
 
-* A ResourceQuota named `no-gpus` in the `{namespace}` namespace forbids requesting any GPU.
-* Every container sets `NVIDIA_VISIBLE_DEVICES=void`, so the NVIDIA container runtime never hands it a GPU.
+* A ResourceQuota named `no-gpus` in the `{namespace}` project forbids requesting any GPU.
+* Every container the workshop defines sets `NVIDIA_VISIBLE_DEVICES=void`, so the NVIDIA container runtime never hands it a GPU. That includes the model containers, through the simulator's ServingRuntime.
 * All pods run under OpenShift's default `restricted-v2` security context: a random non-root UID, a read-only root filesystem and no Linux capabilities.
 
 == Using the terminal
@@ -80,6 +82,23 @@ thanos-ruler-user-workload-0           4/4     Running   0          2h
 
 If there are no pods, the workshop still works. Only the console metrics steps need user workload monitoring.
 
+Check that OpenShift AI model serving (KServe) is available:
+
+[source,role="execute"]
+----
+oc get crd inferenceservices.serving.kserve.io servingruntimes.serving.kserve.io
+----
+
+Expected output:
+
+----
+NAME                                  CREATED AT
+inferenceservices.serving.kserve.io   2026-11-04T18:31:57Z
+servingruntimes.serving.kserve.io     2026-11-04T18:32:00Z
+----
+
+If these resource types don't exist, OpenShift AI with KServe isn't installed, and Module 1 Exercise 2 and Module 3 can't run.
+
 == Troubleshooting
 
 **Issue**: Pods stuck in `ImagePullBackOff`
@@ -89,6 +108,10 @@ If there are no pods, the workshop still works. Only the console metrics steps n
 **Issue**: A Praxis pod is in `CrashLoopBackOff`
 
 **Solution**: Praxis refuses to start with an invalid config and logs the reason. Run `oc -n {namespace} logs deploy/<name>` and read the last lines.
+
+**Issue**: An InferenceService stays `READY False`
+
+**Solution**: Run `oc -n {namespace} describe inferenceservice <name>` and `oc -n {namespace} get pods -l serving.kserve.io/inferenceservice=<name>`. The usual causes are an image pull problem or a missing ServingRuntime: the runtime `llm-d-inference-sim` must exist in the `{namespace}` project.
 
 **Issue**: `forbidden: exceeded quota: no-gpus`
 

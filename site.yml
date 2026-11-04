@@ -1,6 +1,6 @@
 ---
 site:
-  title: "Praxis on OpenShift: from proxy basics to an AI gateway"
+  title: "Praxis on OpenShift AI: from proxy basics to an AI gateway"
   start_page: modules::index.adoc
 
 content:

@@ -1,0 +1,44 @@
+# Prerequisite (not part of the workshop): enable the OpenShift AI components
+# the workshop uses, KServe for model serving and the dashboard. Everything
+# else is left off. Skip this if the cluster already has a DataScienceCluster
+# with KServe Managed.
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+spec:
+  components:
+    kserve:
+      managementState: Managed
+    dashboard:
+      managementState: Managed
+    aigateway:
+      managementState: Removed
+    aipipelines:
+      managementState: Removed
+    feastoperator:
+      managementState: Removed
+    kueue:
+      managementState: Removed
+    llamastackoperator:
+      managementState: Removed
+    mcplifecycleoperator:
+      managementState: Removed
+    mlflowoperator:
+      managementState: Removed
+    modelregistry:
+      managementState: Removed
+    ogx:
+      managementState: Removed
+    ray:
+      managementState: Removed
+    sparkoperator:
+      managementState: Removed
+    trainer:
+      managementState: Removed
+    trainingoperator:
+      managementState: Removed
+    trustyai:
+      managementState: Removed
+    workbenches:
+      managementState: Removed
