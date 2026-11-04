@@ -29,6 +29,33 @@ cat << 'EOF' | oc apply -f -
 include::example$06-basics-configmap.yaml[]
 EOF
 ----
++
+Two parts of that configuration to notice first.
++
+A **listener** is an address Praxis accepts connections on, and the list of filter chains to run for each request it receives:
++
+[source,yaml]
+----
+listeners:
+  - name: web
+    address: "0.0.0.0:8080"
+    filter_chains: [observability, edge, routing]
+----
++
+`web` listens on port 8080 on all interfaces, so the Service and Route can reach it. Every request runs the `observability`, `edge` and `routing` chains, in that order. Each chain is defined further down under `filter_chains`.
++
+A **cluster** is a named group of backends that requests can be sent to:
++
+[source,yaml]
+----
+clusters:
+  - name: app
+    endpoints:
+      - "backend-a.praxis.svc.cluster.local:8080"
+      - "backend-b.praxis.svc.cluster.local:8080"
+----
++
+The `app` cluster holds two echo servers, addressed by their Service DNS names. The `router` filter sends requests to a cluster by name, and the `load_balancer` filter picks one endpoint in it. The full entry also defines a health check for these endpoints, which you use in Exercise 5.
 
 . Create the Deployment that runs Praxis core {praxis_version}. It starts `praxis` with the configuration from the ConfigMap, mounted as a directory so that ConfigMap updates reach the running pod. The liveness probe (`/healthy`) and readiness probe (`/ready`) use the metrics port 9902:
 +
