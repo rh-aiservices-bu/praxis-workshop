@@ -609,6 +609,8 @@ done
 
 . In the **OCP Console** tab, go to **Observe** → **Dashboards (Perses)**, select the project **praxis**, and open **Praxis gateways**.
 +
+image::perses-praxis-gateways-dashboard.png[The Praxis gateways Perses dashboard in the OpenShift console, showing the Traffic row with requests per second, p95 latency, requests per backend and healthy endpoints for the praxis-basics gateway,link=self,window=blank,width=800,title="The Praxis gateways dashboard under Observe, Dashboards (Perses)"]
++
 The panel "Requests per second, by cluster and backend" groups by a label named `exported_endpoint`, not `endpoint`. Praxis labels upstream metrics with `endpoint`, but the Prometheus scrape adds its own `endpoint` label (the ServiceMonitor port), so Prometheus renames Praxis's label to `exported_endpoint`.
 
 === Verify

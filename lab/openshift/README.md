@@ -287,7 +287,9 @@ for i in $(seq 1 60); do curl -s -o /dev/null $B/app; curl -s -o /dev/null $B/ca
 ```
 
 Then go to **Observe → Dashboards (Perses)**, project **praxis**, and open
-**Praxis gateways**. The Traffic row shows the canary's 3:1 split, the
+**Praxis gateways**.
+
+![The Praxis gateways Perses dashboard in the OpenShift console](../../content/modules/ROOT/assets/images/perses-praxis-gateways-dashboard.png) The Traffic row shows the canary's 3:1 split, the
 round robin across `app`, and rate limiting. The AI gateway row fills in
 during Part 1. Note that upstream panels group by `exported_endpoint`: the
 scrape adds its own `endpoint` label, so Prometheus renames Praxis's.
