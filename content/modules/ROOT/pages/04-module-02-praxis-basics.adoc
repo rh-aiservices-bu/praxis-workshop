@@ -223,11 +223,11 @@ curl -s $B/app | grep Name
 curl -s -o /dev/null -w '%{http_code}\n' $B/application
 ----
 
-. Request `/v2` without, then with, the `x-version: v2` header:
+. Request `/v2` twice without the `x-version: v2` header, then once with it:
 +
 [source,role="execute"]
 ----
-curl -s $B/v2 | grep Name
+for i in 1 2; do curl -s $B/v2 | grep Name; done
 curl -s -H 'x-version: v2' $B/v2 | grep Name
 ----
 +
@@ -242,25 +242,28 @@ Two routes share the `/v2` prefix, so the tie rule applies. With the header, bot
 - path_prefix: "/v2"
   cluster: app
 ----
++
+Without the header, the reply alternates between backend-a and backend-b. Routing and load balancing are two separate decisions. The `router` picks the `app` cluster, and `app` has two endpoints, backend-a and backend-b. The `load_balancer` then picks one of them, and its default strategy is round robin, so each request goes to the next endpoint in turn. Which one answers first depends on how many requests the `web` listener has already sent to `app`, including the `/app` request in the previous step. With the header, the router picks the `v2` cluster, which has only backend-c, so the answer is always the same.
 
 === Verify
 
-Expected output for `/app` and `/application`:
+Expected output for `/app` and `/application` (the first line can be backend-a or backend-b):
 
 ----
 Name: backend-a
 404
 ----
 
-Expected output for the two `/v2` requests:
+Expected output for the three `/v2` requests (the first two can come in either order):
 
 ----
+Name: backend-b
 Name: backend-a
 Name: backend-c
 ----
 
 * `/application` gets a 404: it starts with the letters `/app` but not the path segment `/app`, so no route matches
-* Without the header, `/v2` goes to the `app` cluster (backend-a or backend-b)
+* Without the header, `/v2` goes to the `app` cluster, and round robin alternates between backend-a and backend-b
 * With `x-version: v2`, it goes to backend-c
 
 == Exercise 3: Load balancing and header changes

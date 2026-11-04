@@ -139,6 +139,10 @@ but not `/application`. When several routes match, the most specific wins:
 - **On a tie, more conditions win.** The two `/v2` routes share a prefix, so
   when `x-version: v2` is present, the route that requires it wins.
 
+Without the header, `/v2` can answer from backend-a or backend-b. The router
+only picks the `app` cluster; the `load_balancer` then picks one of its two
+endpoints by round robin, so repeated requests alternate between them.
+
 The order of the routes in the file doesn't matter.
 
 ## 3. Load balancing and header changes
