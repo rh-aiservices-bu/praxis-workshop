@@ -1,0 +1,52 @@
+= Praxis on OpenShift: from proxy basics to an AI gateway
+include::partial$_attributes.adoc[]
+
+Welcome to the Praxis on OpenShift workshop!
+
+link:https://github.com/praxis-proxy/praxis[Praxis^] is an open source framework for building proxy servers, written in Rust. link:https://github.com/praxis-proxy/ai[Praxis AI^] is an AI gateway built on it. In this workshop you run both on Red Hat OpenShift, in front of echo servers and simulated large language models (LLMs).
+
+== What you'll learn
+
+In this workshop, you will:
+
+* Understand how Praxis turns YAML configuration into a filter pipeline
+* Route, load balance, rate limit and health-check traffic with Praxis core
+* Change gateway behavior live by editing a ConfigMap, with no restart
+* Route OpenAI and Anthropic API traffic to models by the model named in the request
+* Measure tokens and time to first token per model in OpenShift monitoring
+
+== Who this is for
+
+This workshop is designed for platform engineers and architects who want to understand Praxis and how it can serve as an AI gateway on OpenShift.
+
+**Experience level**: Intermediate
+
+== Prerequisites
+
+Before starting this workshop, you should have:
+
+* Comfort with the `oc` command line and basic Kubernetes objects (pods, Services, ConfigMaps)
+* A general idea of what a reverse proxy does
+* Some familiarity with LLM APIs such as OpenAI Chat Completions (helpful, not required)
+
+== Workshop environment
+
+You work on an OpenShift cluster with cluster-admin access. Everything you create goes into one namespace, `{namespace}`. No GPUs are used: the models are CPU-only simulators.
+
+You will have access to:
+
+* OpenShift console: link:{console_url}[{console_url}^]
+* Username: {admin_user}
+* Password: {admin_password}
+
+NOTE: The terminal and the OpenShift console are available in the tabs on the right.
+
+== Estimated time
+
+This workshop takes approximately **90 minutes** to complete.
+
+You can work at your own pace.
+
+== Let's get started!
+
+Click on **Workshop overview** in the navigation to begin.

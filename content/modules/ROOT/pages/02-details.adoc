@@ -1,0 +1,101 @@
+= Workshop details
+include::partial$_attributes.adoc[]
+:toc:
+:toc-placement: preamble
+:icons: font
+
+== Timing
+
+* **Module 1**: Concepts and setup (20 minutes)
+* **Module 2**: Praxis basics (35 minutes)
+* **Module 3**: Praxis AI gateway (35 minutes)
+
+== Technical requirements
+
+=== Software versions
+
+This workshop was tested with:
+
+* Red Hat OpenShift {ocp_version}, single-node cluster
+* Praxis core {praxis_version} (`ghcr.io/praxis-proxy/praxis`)
+* Praxis AI {praxis_ai_version} (`ghcr.io/praxis-proxy/ai`)
+* llm-d inference simulator {sim_version} (`ghcr.io/llm-d/llm-d-inference-sim`)
+* traefik/whoami v1.10 (`docker.io/traefik/whoami`)
+
+All images are published, so nothing is built during the workshop. The Praxis images are built for the amd64 (x86_64) architecture only.
+
+=== Environment access
+
+You need:
+
+* cluster-admin access, or a user who can create a namespace, ResourceQuota and ServiceMonitor
+* Outbound access from the cluster to `ghcr.io` and `docker.io` to pull images
+* User workload monitoring enabled, for the metrics steps in the OpenShift console
+
+=== GPU guardrails
+
+The workshop never uses a GPU, even on a GPU node:
+
+* A ResourceQuota named `no-gpus` in the `{namespace}` namespace forbids requesting any GPU.
+* Every container sets `NVIDIA_VISIBLE_DEVICES=void`, so the NVIDIA container runtime never hands it a GPU.
+* All pods run under OpenShift's default `restricted-v2` security context: a random non-root UID, a read-only root filesystem and no Linux capabilities.
+
+== Using the terminal
+
+Commands in this workshop run in the **Terminal** tab on the right. Click a command block to run it there.
+
+Several steps set shell variables (such as `B` and `AI`) or define a small `chat` helper function. These last for the current terminal session. If the terminal reconnects, rerun the block that defines them; each module shows it near the top.
+
+== Setup validation
+
+Confirm that you're logged in to the cluster:
+
+[source,role="execute"]
+----
+oc whoami
+----
+
+If you aren't logged in, log in with the cluster-admin credentials:
+
+[source,role="execute",subs="attributes+"]
+----
+oc login -u {admin_user} -p {admin_password} {api_url}
+----
+
+Check that user workload monitoring is enabled:
+
+[source,role="execute"]
+----
+oc get pods -n openshift-user-workload-monitoring
+----
+
+Expected output (pod names vary):
+
+----
+NAME                                   READY   STATUS    RESTARTS   AGE
+prometheus-operator-5ff8fc6c68-dxqll   2/2     Running   0          2h
+prometheus-user-workload-0             6/6     Running   0          2h
+thanos-ruler-user-workload-0           4/4     Running   0          2h
+----
+
+If there are no pods, the workshop still works. Only the console metrics steps need user workload monitoring.
+
+== Troubleshooting
+
+**Issue**: Pods stuck in `ImagePullBackOff`
+
+**Solution**: The cluster can't reach `ghcr.io` or `docker.io`. Check with `oc -n {namespace} describe pod <pod-name>` and look at the events.
+
+**Issue**: A Praxis pod is in `CrashLoopBackOff`
+
+**Solution**: Praxis refuses to start with an invalid config and logs the reason. Run `oc -n {namespace} logs deploy/<name>` and read the last lines.
+
+**Issue**: `forbidden: exceeded quota: no-gpus`
+
+**Solution**: Something asked for a GPU. The quota is working as intended; remove the GPU request from that manifest.
+
+== Authors and contributors
+
+**Primary author**: phayes@redhat.com
+
+**Based on**: the Praxis and Praxis AI documentation and example configurations

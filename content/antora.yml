@@ -1,0 +1,23 @@
+name: modules
+title: Praxis on OpenShift
+version: main
+start_page: index.adoc
+nav:
+  - modules/ROOT/nav.adoc
+
+asciidoc:
+  attributes:
+    page-pagination: '@'
+    # Placeholders. Showroom replaces these at runtime with the values from
+    # the deployed environment (RHDP user data).
+    guid: my-guid
+    openshift_cluster_ingress_domain: apps.cluster.example.com
+    openshift_console_url: https://console-openshift-console.apps.cluster.example.com
+    openshift_api_url: https://api.cluster.example.com:6443
+    openshift_cluster_admin_username: admin
+    openshift_cluster_admin_password: changeme
+    page-links:
+    - url: https://github.com/praxis-proxy/praxis
+      text: Praxis
+    - url: https://github.com/praxis-proxy/ai
+      text: Praxis AI

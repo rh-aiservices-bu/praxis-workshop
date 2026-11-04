@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: praxis-basics
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  selector:
+    matchLabels:
+      app: praxis-basics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s

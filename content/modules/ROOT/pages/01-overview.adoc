@@ -1,0 +1,77 @@
+= Workshop overview
+include::partial$_attributes.adoc[]
+:toc:
+:toc-placement: preamble
+:icons: font
+
+== Why Praxis
+
+Every application platform needs a proxy in front of its services: something that routes requests, spreads load, protects backends and reports what is happening. AI workloads add new demands on top of that:
+
+* The routing signal, the `model` a client asks for, is inside the JSON request body, not in the path or headers.
+* Clients speak different API formats (OpenAI Chat Completions, OpenAI Responses, Anthropic Messages), and backends often speak only one.
+* Cost and capacity are measured in tokens, not requests.
+* Responses stream back token by token over long-lived connections.
+
+Praxis is a proxy framework built for both. Praxis core provides the general-purpose proxy. Praxis AI adds filters that understand AI traffic. Both share one configuration model, so what you learn in the basics carries straight into the AI gateway.
+
+== What you'll build
+
+By the end of the workshop, your `{namespace}` namespace contains two gateways and their backends:
+
+----
+                               namespace: praxis
+                 +--------------------------------------------------------+
+ Route --------->| praxis-basics  listener web      --+                   |
+ Route (limited)>|  (Praxis core) listener limited  --+--> backend-a/b/c  |  echo servers
+                 |                                                        |
+ Route --------->| praxis-ai      (Praxis AI) --+--> granite-0, granite-1 |  simulated LLMs
+                 |                              +--> qwen                 |
+                 |                                                        |
+                 | ServiceMonitors --> OpenShift user workload monitoring |
+                 +--------------------------------------------------------+
+----
+
+== Learning objectives
+
+By the end of this workshop, you'll be able to:
+
+* Explain how listeners, filter chains and pipelines fit together, and how a request flows through them
+* Configure path and header routing, weighted load balancing, rate limiting and active health checks
+* Reload gateway configuration from a ConfigMap without restarting pods, and see invalid changes rejected
+* Route OpenAI-compatible traffic by the `model` field in the request body
+* Serve Anthropic Messages clients from OpenAI Chat Completions backends, including streaming
+* Monitor per-model token usage and time to first token with OpenShift monitoring
+
+== Workshop modules
+
+**Total duration**: about 90 minutes
+
+=== Module 1: Concepts and setup (20 minutes)
+
+* What Praxis is and how it relates to Pingora and Praxis AI
+* Filters, chains and pipelines, and the life of a request
+* Deploy the echo servers and simulated models used in the later modules
+
+=== Module 2: Praxis basics (35 minutes)
+
+* Deploy Praxis core in front of the echo servers
+* Listeners, chains and pipelines in a live configuration
+* Routing, load balancing, rate limiting and health checks
+* Hot reload from a ConfigMap, and metrics in the OpenShift console
+
+=== Module 3: Praxis AI gateway (35 minutes)
+
+* Deploy Praxis AI in front of the simulated models
+* Route by model, balance across model pods, and handle pod failures
+* Translate Anthropic Messages to OpenAI Chat Completions
+* Token and time-to-first-token metrics
+* Exercise: add a new model with zero downtime
+
+== Expected outcomes
+
+When you finish, you'll have:
+
+* A working Praxis core gateway and a working Praxis AI gateway on OpenShift
+* Hands-on experience with the configuration patterns you would use in production
+* A clear picture of what Praxis core does and what Praxis AI adds on top

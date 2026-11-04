@@ -1,0 +1,189 @@
+# Part 0 backends: three traefik/whoami echo servers. Each echoes the request
+# it received, so you can see exactly what Praxis added or changed, and
+# prints "Name: backend-x" so you can see which one answered.
+#
+# whoami listens on 8080: OpenShift's restricted SCC runs containers with a
+# random non-root UID, which cannot bind ports below 1024.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-a
+  namespace: praxis
+  labels:
+    app: backend-a
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  selector:
+    app: backend-a
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-a
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-a
+  template:
+    metadata:
+      labels:
+        app: backend-a
+        app.kubernetes.io/part-of: praxis-lab
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: whoami
+          image: docker.io/traefik/whoami:v1.10
+          args: ["--port", "8080", "--name", "backend-a"]
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-b
+  namespace: praxis
+  labels:
+    app: backend-b
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  selector:
+    app: backend-b
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-b
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-b
+  template:
+    metadata:
+      labels:
+        app: backend-b
+        app.kubernetes.io/part-of: praxis-lab
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: whoami
+          image: docker.io/traefik/whoami:v1.10
+          args: ["--port", "8080", "--name", "backend-b"]
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-c
+  namespace: praxis
+  labels:
+    app: backend-c
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  selector:
+    app: backend-c
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-c
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend-c
+  template:
+    metadata:
+      labels:
+        app: backend-c
+        app.kubernetes.io/part-of: praxis-lab
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: whoami
+          image: docker.io/traefik/whoami:v1.10
+          args: ["--port", "8080", "--name", "backend-c"]
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
+          ports:
+            - name: http
+              containerPort: 8080
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

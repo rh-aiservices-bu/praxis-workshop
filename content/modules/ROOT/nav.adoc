@@ -1,0 +1,7 @@
+* xref:index.adoc[Home]
+* xref:01-overview.adoc[Workshop overview]
+* xref:02-details.adoc[Workshop details]
+* xref:03-module-01-concepts-setup.adoc[Module 1: Concepts and setup]
+* xref:04-module-02-praxis-basics.adoc[Module 2: Praxis basics]
+* xref:05-module-03-ai-gateway.adoc[Module 3: Praxis AI gateway]
+* xref:06-conclusion.adoc[Conclusion and next steps]

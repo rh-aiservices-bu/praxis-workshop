@@ -1,0 +1,280 @@
+# Part 0: Praxis basics (ghcr.io/praxis-proxy/praxis:0.7.5) in front of the
+# whoami echo backends. One config, a different feature on each path:
+#
+#   /            static_response   (no upstream at all)
+#   /app         round robin across backend-a + backend-b, active health checks
+#   /canary      weighted 3:1 split between backend-a and backend-c
+#   /v2          header-based routing: "x-version: v2" -> backend-c
+#
+# A second listener (route praxis-basics-limited) runs the same chains behind
+# a rate_limit (2 req/s, burst 4).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: praxis-basics-config
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+data:
+  praxis.yaml: |
+    admin:
+      # Kubelet probes and Prometheus reach the pod IP, so bind all interfaces.
+      metrics_address: "0.0.0.0:9902"
+      verbose: true
+
+    metrics:
+      filter_duration: true
+
+    # Top-level clusters carry health checks. In Praxis 0.7.5 the
+    # load_balancer entries below must repeat the endpoints.
+    clusters:
+      - name: app
+        endpoints:
+          - "backend-a.praxis.svc.cluster.local:8080"
+          - "backend-b.praxis.svc.cluster.local:8080"
+        # Lets the health checker probe these private addresses.
+        trusted_private_endpoints:
+          - backend-a.praxis.svc.cluster.local
+          - backend-b.praxis.svc.cluster.local
+        health_check:
+          type: http
+          path: "/health"
+          expected_status: 200
+          interval_ms: 2000
+          timeout_ms: 1000
+          healthy_threshold: 1
+          unhealthy_threshold: 2
+
+    listeners:
+      - name: web
+        address: "0.0.0.0:8080"
+        filter_chains: [observability, edge, routing]
+
+      # Same chains plus a rate limit in front. rate_limit is a security
+      # filter, and Praxis refuses to let a security filter be skipped by a
+      # condition (that is a bypass) unless you opt in under
+      # insecure_options. A separate listener keeps the limit unconditional.
+      - name: limited
+        address: "0.0.0.0:8081"
+        filter_chains: [observability, throttle, edge, routing]
+
+    filter_chains:
+      - name: observability
+        filters:
+          - filter: request_id
+          - filter: access_log
+
+      - name: throttle
+        filters:
+          - filter: rate_limit
+            mode: global
+            rate: 2
+            burst: 4
+
+      - name: edge
+        filters:
+          - filter: headers
+            request_add:
+              - name: X-Via
+                value: praxis-lab
+            response_set:
+              - name: X-Powered-By
+                value: praxis
+
+          - filter: static_response
+            status: 200
+            headers:
+              - name: Content-Type
+                value: application/json
+            body: '{"lab": "praxis", "try": ["/app", "/canary", "/v2"]}'
+            conditions:
+              - when:
+                  path: "/"
+
+      - name: routing
+        filters:
+          - filter: router
+            routes:
+              - path_prefix: "/app"
+                cluster: app
+              - path_prefix: "/canary"
+                cluster: canary
+              # Same prefix, two routes: the header-matching one wins when
+              # the header is present, otherwise traffic falls through to app.
+              - path_prefix: "/v2"
+                cluster: v2
+                headers:
+                  x-version: v2
+              - path_prefix: "/v2"
+                cluster: app
+
+          - filter: load_balancer
+            clusters:
+              # Service DNS names resolve to private cluster IPs. Praxis
+              # refuses private upstreams by default (an SSRF guard); this
+              # allowlists just these names.
+              - name: app
+                endpoints:
+                  - "backend-a.praxis.svc.cluster.local:8080"
+                  - "backend-b.praxis.svc.cluster.local:8080"
+                trusted_private_endpoints:
+                  - backend-a.praxis.svc.cluster.local
+                  - backend-b.praxis.svc.cluster.local
+
+              - name: canary
+                load_balancer_strategy: round_robin
+                endpoints:
+                  - address: "backend-a.praxis.svc.cluster.local:8080"
+                    weight: 3
+                  - address: "backend-c.praxis.svc.cluster.local:8080"
+                    weight: 1
+                trusted_private_endpoints:
+                  - backend-a.praxis.svc.cluster.local
+                  - backend-c.praxis.svc.cluster.local
+
+              - name: v2
+                endpoints:
+                  - "backend-c.praxis.svc.cluster.local:8080"
+                trusted_private_endpoints:
+                  - backend-c.praxis.svc.cluster.local
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: praxis-basics
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: praxis-basics
+  template:
+    metadata:
+      labels:
+        app: praxis-basics
+        app.kubernetes.io/part-of: praxis-lab
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: praxis
+          image: ghcr.io/praxis-proxy/praxis:0.7.5
+          command: ["praxis", "-c", "/etc/praxis-lab/praxis.yaml"]
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
+          ports:
+            - name: web
+              containerPort: 8080
+            - name: limited
+              containerPort: 8081
+            - name: metrics
+              containerPort: 9902
+          livenessProbe:
+            httpGet:
+              path: /healthy
+              port: metrics
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Mount the directory, not a subPath: ConfigMap updates are then
+            # delivered by an atomic symlink swap that the watcher sees.
+            - name: config
+              mountPath: /etc/praxis-lab
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: praxis-basics-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: praxis-basics
+  namespace: praxis
+  labels:
+    app: praxis-basics
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  selector:
+    app: praxis-basics
+  ports:
+    - name: web
+      port: 8080
+      targetPort: web
+    - name: limited
+      port: 8081
+      targetPort: limited
+    - name: metrics
+      port: 9902
+      targetPort: metrics
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: praxis-basics
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  to:
+    kind: Service
+    name: praxis-basics
+  port:
+    targetPort: web
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: praxis-basics-limited
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  to:
+    kind: Service
+    name: praxis-basics
+  port:
+    targetPort: limited
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: praxis-basics
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  selector:
+    matchLabels:
+      app: praxis-basics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s

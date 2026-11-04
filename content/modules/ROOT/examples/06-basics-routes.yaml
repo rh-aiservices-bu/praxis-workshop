@@ -1,0 +1,33 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: praxis-basics
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  to:
+    kind: Service
+    name: praxis-basics
+  port:
+    targetPort: web
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: praxis-basics-limited
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  to:
+    kind: Service
+    name: praxis-basics
+  port:
+    targetPort: limited
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

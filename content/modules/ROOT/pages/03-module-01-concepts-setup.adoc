@@ -1,0 +1,244 @@
+= Module 1: Concepts and setup
+include::partial$_attributes.adoc[]
+:source-highlighter: rouge
+:toc: macro
+:toclevels: 1
+
+Before you route any traffic, you need a mental model of how Praxis works. In this module you learn the core ideas, then deploy the backends the rest of the workshop uses: three echo servers and two simulated models.
+
+toc::[]
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Describe what Praxis is, and how it relates to Pingora and Praxis AI
+* Explain the idea that everything in Praxis is a filter
+* Trace a request through a Praxis pipeline
+* Deploy the backends a Praxis gateway will route to: echo servers and simulated LLMs
+
+== What Praxis is
+
+Praxis is a framework for building proxy servers, written in Rust. It ships a ready-to-run proxy binary, `praxis`, configured entirely in YAML. You can also write your own filters in Rust and compile them into a custom binary that uses the same YAML.
+
+link:https://github.com/praxis-proxy/ai[Praxis AI^] is an example of the second approach. It is a separate binary, `praxis-ai`, made of Praxis core plus a set of AI-specific filters. Its configuration format is the same, so every core feature you use in Module 2 also works in the AI gateway in Module 3.
+=== Built on Pingora
+
+Praxis is built on link:https://github.com/cloudflare/pingora[Pingora^], an open source Rust library from Cloudflare for building fast, reliable network services. Pingora is a library, not a product. It handles the low-level work:
+
+* Asynchronous networking, listeners and graceful restarts
+* HTTP/1.1, HTTP/2, gRPC and WebSocket
+* TLS and upstream connection pooling
+* Strict HTTP parsing that defends against request smuggling
+
+Praxis adds everything above that: the YAML configuration, filter chains, routing and load-balancing decisions, health checks, rate limits, metrics, hot reload and secure defaults. Pingora calls into Praxis at a few points in every request:
+
+----
+1. Request arrives        Praxis runs the request filters (route, rate limit, add headers, ...)
+2. Pick the backend       Praxis says which cluster and endpoint
+3. Pingora connects       pooled connection, retries on failure
+4. Response comes back    Praxis runs the response filters
+5. Request finished       Praxis records metrics and logs
+----
+
+== Everything is a filter
+
+In Praxis, every behavior is a **filter**: routing, load balancing, rate limiting, header changes, static replies, AI request parsing. Built-in filters and your own filters implement the same Rust traits.
+
+The configuration arranges filters in three layers:
+
+[cols="1,3",options="header"]
+|===
+| Term | What it is
+
+| **Listener**
+| An address and port Praxis accepts connections on, plus the list of filter chains to run
+
+| **Filter chain**
+| A named, reusable list of filters. Chains exist only in the configuration.
+
+| **Pipeline**
+| The flat list of filters a listener actually runs. Praxis builds it at startup by joining the listener's chains in order.
+|===
+
+Two filters work together to send a request to a backend, and they are deliberately separate:
+
+* **`router`** picks a **cluster** (a named group of backends): *where* the request goes.
+* **`load_balancer`** picks an **endpoint** in that cluster: *which* backend instance gets it.
+
+== Life of a request
+
+When a request arrives, Praxis takes a snapshot of the listener's current pipeline and runs it:
+
+* **Request filters run in order.** Before each filter, Praxis checks the filter's conditions (path, method, headers) and skips it if they don't match.
+* **Any filter can answer the request itself** and stop the pipeline, for example a static response, a 429 from a rate limiter, or a 403.
+* **The router and load balancer choose the backend**, and Pingora forwards the request.
+* **Response filters run in reverse order**, and only filters that ran on the way in run on the way out.
+
+Because each request keeps the pipeline snapshot it started with, Praxis can swap in a new configuration at any moment. In-flight requests finish on the old pipeline and new requests use the new one. That is how hot reload works in Module 2.
+
+=== Secure by default
+
+Praxis fails closed on risky configuration. A few defaults you'll meet in the workshop:
+
+* Backends at private IP addresses, such as Kubernetes Service IPs, are refused unless their DNS names are on an allowlist (`trusted_private_endpoints`). This guards against server-side request forgery.
+* Headers starting with `x-praxis-` can only be set by filters. A client that sends one gets a 400, so these headers are safe to route on.
+* Praxis refuses to run as root and refuses invalid configuration, both at startup and on reload.
+
+== Exercise 1: Deploy the echo servers
+
+Module 2 uses three `traefik/whoami` echo servers as backends. Each one echoes back the request it received, so you can see exactly what Praxis added or changed, and prints `Name: backend-a` (or `-b`, `-c`) so you can see which one answered.
+
+They listen on port 8080, because OpenShift's restricted security context runs containers with a random non-root UID, which can't bind ports below 1024.
+
+. Create the `praxis` project that holds everything in this workshop, and switch to it. It comes with the GPU guardrails described in xref:02-details.adoc#_gpu_guardrails[Workshop details].
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$00-namespace.yaml[]
+EOF
+oc project praxis
+----
+
+. Create a Service for each echo server. Each Service gives its pod a stable DNS name, such as `backend-a.praxis.svc.cluster.local`, which is the address Praxis will use:
++
+[source,role="execute"]
+----
+for b in backend-a backend-b backend-c; do
+cat << EOF | oc apply -f -
+include::example$05-echo-service.yaml[]
+EOF
+done
+----
+
+. Create a Deployment for each echo server. It runs one non-root whoami pod on port 8080, with `--name` set so each server labels its replies, and `NVIDIA_VISIBLE_DEVICES=void` so no GPU is ever attached:
++
+[source,role="execute"]
+----
+for b in backend-a backend-b backend-c; do
+cat << EOF | oc apply -f -
+include::example$05-echo-deployment.yaml[]
+EOF
+done
+----
+
+. Wait for them to be ready:
++
+[source,role="execute"]
+----
+for b in backend-a backend-b backend-c; do oc rollout status deploy/$b --timeout=120s; done
+----
+
+=== Verify
+
+[source,role="execute"]
+----
+oc get pods -l 'app in (backend-a,backend-b,backend-c)'
+----
+
+Expected output (pod names vary):
+
+----
+NAME                         READY   STATUS    RESTARTS   AGE
+backend-a-6ffbfd598d-gk258   1/1     Running   0          30s
+backend-b-7c9d8f6b4-x2q8n    1/1     Running   0          30s
+backend-c-5b8c7d9f6-p4k7m    1/1     Running   0          30s
+----
+
+* All three pods are `Running` and `1/1` ready
+
+== Exercise 2: Deploy the simulated models
+
+Module 3 uses the link:https://github.com/llm-d/llm-d-inference-sim[llm-d inference simulator^], a CPU-only stand-in for vLLM. It serves the OpenAI and Anthropic APIs, reports token usage, and simulates time to first token and per-token latency. It needs no GPU and downloads no model.
+
+You deploy two models, set up two different ways on purpose:
+
+* **`granite-3.1-8b-instruct`** runs as a StatefulSet with 2 pods behind a *headless* Service. Each pod gets its own DNS name, so Praxis can balance and health-check each pod itself. Time to first token: 150 ms.
+* **`qwen3-8b`** runs as an ordinary Deployment behind a regular ClusterIP Service, so Kubernetes balances behind one address. Time to first token: 300 ms.
+
+. Create the headless Service for granite. `clusterIP: None` makes DNS return each pod individually, so the pods are reachable as `granite-0.granite.praxis.svc.cluster.local` and `granite-1.granite.praxis.svc.cluster.local`:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$10-granite-service.yaml[]
+EOF
+----
+
+. Create the granite StatefulSet. It runs 2 simulator pods with stable names, serving `granite-3.1-8b-instruct` with 150 ms to first token and 20 ms per token. `POD_NAME` makes each reply carry an `x-inference-pod` header naming the pod:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$10-granite-statefulset.yaml[]
+EOF
+----
+
+. Create an ordinary ClusterIP Service for qwen. It has one address, and Kubernetes chooses the pod behind it:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$10-qwen-service.yaml[]
+EOF
+----
+
+. Create the qwen Deployment. It runs 1 simulator pod serving `qwen3-8b` with 300 ms to first token and 30 ms per token:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$10-qwen-deployment.yaml[]
+EOF
+----
+
+. Wait for them to be ready:
++
+[source,role="execute"]
+----
+oc rollout status statefulset/granite --timeout=120s
+oc rollout status deploy/qwen --timeout=120s
+----
+
+=== Verify
+
+[source,role="execute"]
+----
+oc get pods -l 'app in (granite,qwen)'
+----
+
+Expected output (pod names vary):
+
+----
+NAME                    READY   STATUS    RESTARTS   AGE
+granite-0               1/1     Running   0          20s
+granite-1               1/1     Running   0          20s
+qwen-77579855fb-9gvhw   1/1     Running   0          20s
+----
+
+* `granite-0` and `granite-1` are running: the StatefulSet's pods have stable names
+* `qwen` is running with a generated pod name
+
+== Troubleshooting
+
+**Issue**: `Error from server (AlreadyExists)` or `unchanged` messages
+
+**Solution**: The objects already exist from an earlier run. `oc apply` is safe to rerun, so you can carry on.
+
+**Issue**: Pods stay in `ContainerCreating` or `ImagePullBackOff`
+
+**Solution**: Run `oc describe pod <pod-name>` and check the events. The cluster needs outbound access to `ghcr.io` and `docker.io`.
+
+== Learning outcomes
+
+By completing this module, you should now understand:
+
+* ✓ Praxis is a proxy framework built on Pingora, and Praxis AI is Praxis core plus AI filters
+* ✓ Every behavior is a filter, and listeners run pipelines built from named chains
+* ✓ The router chooses a cluster and the load balancer chooses an endpoint
+* ✓ Request filters run in order, response filters in reverse, and any filter can answer early
+
+== Module summary
+
+You learned the ideas behind Praxis and deployed the backends for the rest of the workshop: three echo servers and two simulated models. Next, in xref:04-module-02-praxis-basics.adoc[Module 2: Praxis basics], you deploy Praxis core and put these ideas to work.

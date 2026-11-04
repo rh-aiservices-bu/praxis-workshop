@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: praxis-ai
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: praxis-ai
+  template:
+    metadata:
+      labels:
+        app: praxis-ai
+        app.kubernetes.io/part-of: praxis-lab
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: praxis-ai
+          image: ghcr.io/praxis-proxy/ai:0.9.0
+          command: ["praxis-ai", "-c", "/etc/praxis-lab/praxis-ai.yaml"]
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9902
+          livenessProbe:
+            httpGet:
+              path: /healthy
+              port: metrics
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/praxis-lab
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: praxis-ai-config

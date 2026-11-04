@@ -1,0 +1,263 @@
+# Part 1: Praxis AI (ghcr.io/praxis-proxy/ai:0.9.0), the AI gateway built on
+# Praxis core, in front of the simulated models.
+#
+# Core features (same as Part 0): listeners, chains, router, load_balancer,
+# health checks, hot reload, metrics. AI filters on top:
+#   - ai_operation          knows which AI API a request uses
+#   - model_to_header       body "model" -> X-Model (client copies stripped)
+#   - Anthropic Messages -> OpenAI Chat translation (request, response, stream)
+#   - token_count           per-model token metrics
+#   - time_to_first_token   TTFT histogram per model
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: praxis-ai-config
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+data:
+  praxis-ai.yaml: |
+    admin:
+      # Kubelet probes and Prometheus reach the pod IP, so bind all interfaces.
+      metrics_address: "0.0.0.0:9902"
+      verbose: true
+
+    # Top-level cluster with health checks on each granite pod. Praxis AI
+    # 0.9.0 is built on core 0.7.5, so the load_balancer entry below must
+    # repeat the endpoints.
+    clusters:
+      - name: granite
+        endpoints:
+          - "granite-0.granite.praxis.svc.cluster.local:8000"
+          - "granite-1.granite.praxis.svc.cluster.local:8000"
+        trusted_private_endpoints:
+          - granite-0.granite.praxis.svc.cluster.local
+          - granite-1.granite.praxis.svc.cluster.local
+        health_check:
+          type: http
+          path: "/health"
+          expected_status: 200
+          interval_ms: 2000
+          timeout_ms: 1000
+          healthy_threshold: 1
+          unhealthy_threshold: 2
+
+    listeners:
+      - name: ai-gateway
+        address: "0.0.0.0:8080"
+        filter_chains: [observability, classify, translate, routing]
+
+    filter_chains:
+      - name: observability
+        filters:
+          - filter: request_id
+          - filter: access_log
+
+      # What is this request? Which API, which model, how big?
+      - name: classify
+        filters:
+          - filter: ai_operation
+          - filter: anthropic_messages_request
+            on_invalid: continue
+            conditions:
+              - when:
+                  path: "/v1/messages"
+          - filter: openai_chat_completions_request
+            conditions:
+              - when:
+                  path: "/v1/chat/completions"
+          - filter: model_to_header
+            header: X-Model
+          # token_ceiling would go here, but it is experimental and not in
+          # the published image (fatal: unknown filter type).
+
+      # Anthropic clients (e.g. Claude Code) -> OpenAI Chat backends.
+      - name: translate
+        filters:
+          - filter: anthropic_messages_to_chat_completions
+            conditions:
+              - when:
+                  path: "/v1/messages"
+          - filter: anthropic_messages_to_chat_completions_stream
+            conditions:
+              - when:
+                  path: "/v1/messages"
+            response_conditions:
+              - when:
+                  headers:
+                    content-type: "text/event-stream"
+          - filter: path_rewrite
+            replace:
+              pattern: "^/v1/messages$"
+              replacement: "/v1/chat/completions"
+            conditions:
+              - when:
+                  path: "/v1/messages"
+
+      - name: routing
+        filters:
+          - filter: router
+            routes:
+              - path_prefix: "/v1/"
+                headers:
+                  x-model: granite-3.1-8b-instruct
+                cluster: granite
+              - path_prefix: "/v1/"
+                headers:
+                  x-model: qwen3-8b
+                cluster: qwen
+              - path_prefix: "/v1/"
+                headers:
+                  x-model: llama-3.1-8b-instruct
+                cluster: llama
+
+          # Response filters run in reverse, so token_count reads the
+          # backend's OpenAI-format usage before (for Anthropic clients) the
+          # body is translated back. It publishes per-model token metrics
+          # (praxis_ai_prompt_tokens_total, praxis_ai_output_tokens_total).
+          #
+          # token_usage_headers is not used: usage is in the response body,
+          # which arrives after headers are already sent, so it can't add
+          # Praxis-Token-* headers for OpenAI or Anthropic backends.
+          - filter: token_count
+            provider: openai
+          - filter: time_to_first_token
+
+          - filter: load_balancer
+            clusters:
+              # Praxis balances across the two granite pods itself.
+              - name: granite
+                load_balancer_strategy: round_robin
+                endpoints:
+                  - "granite-0.granite.praxis.svc.cluster.local:8000"
+                  - "granite-1.granite.praxis.svc.cluster.local:8000"
+                trusted_private_endpoints:
+                  - granite-0.granite.praxis.svc.cluster.local
+                  - granite-1.granite.praxis.svc.cluster.local
+              - name: qwen
+                endpoints:
+                  - "qwen.praxis.svc.cluster.local:8000"
+                trusted_private_endpoints:
+                  - qwen.praxis.svc.cluster.local
+              - name: llama
+                endpoints:
+                  - "llama.praxis.svc.cluster.local:8000"
+                trusted_private_endpoints:
+                  - llama.praxis.svc.cluster.local
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: praxis-ai
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: praxis-ai
+  template:
+    metadata:
+      labels:
+        app: praxis-ai
+        app.kubernetes.io/part-of: praxis-lab
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: praxis-ai
+          image: ghcr.io/praxis-proxy/ai:0.9.0
+          command: ["praxis-ai", "-c", "/etc/praxis-lab/praxis-ai.yaml"]
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9902
+          livenessProbe:
+            httpGet:
+              path: /healthy
+              port: metrics
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/praxis-lab
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: praxis-ai-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: praxis-ai
+  namespace: praxis
+  labels:
+    app: praxis-ai
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  selector:
+    app: praxis-ai
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: metrics
+      port: 9902
+      targetPort: metrics
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: praxis-ai
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  to:
+    kind: Service
+    name: praxis-ai
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: praxis-ai
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  selector:
+    matchLabels:
+      app: praxis-ai
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s

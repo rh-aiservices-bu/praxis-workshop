@@ -1,0 +1,487 @@
+= Module 3: Praxis AI gateway
+include::partial$_attributes.adoc[]
+:source-highlighter: rouge
+:toc: macro
+:toclevels: 1
+
+Praxis AI {praxis_ai_version} is Praxis core plus filters that understand AI traffic. Everything from Module 2 still applies: the same listeners, chains, router, load balancer, health checks, hot reload and metrics. In this module you put it in front of the two simulated models and use what it adds.
+
+toc::[]
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Route OpenAI-compatible requests by the `model` field in the request body
+* Explain the difference between Praxis balancing model pods and Kubernetes balancing them
+* Serve Anthropic Messages clients from OpenAI Chat Completions backends, including streaming
+* Monitor token usage and time to first token per model
+
+== Deploy the Praxis AI gateway
+
+The gateway is five pieces, like the one in Module 2: the Praxis AI configuration, the Praxis AI pod, a Service, a Route and a ServiceMonitor. Its listener runs four chains:
+
+* **`observability`**: `request_id` and `access_log`, as in Module 2
+* **`classify`**: work out which AI API the request uses and which model it asks for
+* **`translate`**: convert Anthropic Messages requests and responses to and from OpenAI Chat Completions
+* **`routing`**: `router`, token metrics and `load_balancer`
+
+. Create the ConfigMap that holds the Praxis AI configuration: the listener and its four chains, routes for the two models, a health check on each granite pod, and a `load_balancer` cluster per model:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$20-ai-configmap.yaml[]
+EOF
+----
+
+. Create the Deployment that runs Praxis AI {praxis_ai_version}. It starts `praxis-ai` with the configuration from the ConfigMap, mounted as a directory so that updates reach the running pod, with liveness and readiness probes on the metrics port 9902:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$20-ai-deployment.yaml[]
+EOF
+----
+
+. Create the Service. It exposes the gateway on port 8080 and health and metrics on port 9902:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$20-ai-service.yaml[]
+EOF
+----
+
+. Create the Route, so you reach the gateway over HTTPS:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$20-ai-route.yaml[]
+EOF
+----
+
+. Create the ServiceMonitor, so OpenShift user workload monitoring scrapes the Praxis AI metrics, including the token metrics, every 15 seconds:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$20-ai-servicemonitor.yaml[]
+EOF
+----
+
+. Wait for it to be ready:
++
+[source,role="execute"]
+----
+oc rollout status deploy/praxis-ai --timeout=120s
+----
+
+. Save the Route URL and define a small `chat` helper that sends an OpenAI Chat Completions request for a given model. Rerun this block if your terminal reconnects.
++
+[source,role="execute"]
+----
+AI=https://$(oc get route praxis-ai -o jsonpath='{.spec.host}')
+chat() {  # chat <model> [extra curl args...]
+  local model=$1; shift
+  curl -s "$AI/v1/chat/completions" -H 'content-type: application/json' "$@" \
+    -d "{\"model\":\"$model\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+}
+echo "AI gateway: $AI"
+----
+
+=== Verify
+
+[source,role="execute"]
+----
+oc logs deploy/praxis-ai | grep -E 'listener registered|health check task'
+----
+
+Expected output (timestamps omitted):
+
+----
+INFO ... spawning health check task cluster=granite check_type=http interval_ms=2000 timeout_ms=1000 endpoints=2
+INFO ... HTTP listener registered name=ai-gateway address=0.0.0.0:8080 tls=false
+----
+
+* The `ai-gateway` listener is registered
+* A health check task is running for the two granite pods
+
+== Exercise 1: One endpoint, many models
+
+All OpenAI clients call the same URL. Praxis picks the backend from the `model` field inside the JSON body.
+
+. Ask each model a question:
++
+[source,role="execute"]
+----
+chat granite-3.1-8b-instruct | head -c 200; echo
+chat qwen3-8b | head -c 200; echo
+----
+
+. Ask for a model the gateway doesn't know:
++
+[source,role="execute"]
+----
+chat gpt-4o -i | head -1
+----
+
+. Try to steer routing with a header:
++
+[source,role="execute"]
+----
+chat granite-3.1-8b-instruct -H 'X-Model: qwen3-8b' -D - -o /dev/null | grep -i x-inference-pod
+----
+
+The routing happens in three steps:
+
+* **`ai_operation`** identifies the AI API and operation (OpenAI Chat, Responses, Anthropic Messages and so on) from the method and path alone, before reading any body.
+* **`model_to_header`** reads `model` from the body without forwarding anything yet, and copies it into the `X-Model` header. It **replaces** any client-sent `X-Model`.
+* **`router`** matches `X-Model` to a cluster, exactly as in Module 2.
+
+This is the **classify, promote, route** pattern: turn something in the request into a header, then route on the header.
+
+=== Verify
+
+Expected output (response bodies trimmed):
+
+----
+{"id":"chatcmpl-...","model":"granite-3.1-8b-instruct","object":"chat.completion",...
+{"id":"chatcmpl-...","model":"qwen3-8b","object":"chat.completion",...
+HTTP/1.1 404 Not Found
+x-inference-pod: granite-1
+----
+
+* Each model answers its own requests
+* An unknown model gets a 404, because no route matches it
+* The request with `X-Model: qwen3-8b` still reached a granite pod: routing follows the body, not the client's header
+
+== Exercise 2: Per-pod balancing and failures
+
+The simulator returns an `x-inference-pod` response header naming the pod that answered.
+
+. Compare the two models:
++
+[source,role="execute"]
+----
+for i in 1 2 3 4; do chat granite-3.1-8b-instruct -D - -o /dev/null | grep -i x-inference-pod; done
+for i in 1 2 3 4; do chat qwen3-8b -D - -o /dev/null | grep -i x-inference-pod; done
+----
+
+. Remove one granite pod, then check readiness and traffic:
++
+[source,role="execute"]
+----
+oc scale statefulset/granite --replicas=1
+sleep 8
+oc exec deploy/praxis-ai -- wget -qO- http://127.0.0.1:9902/ready; echo
+for i in 1 2 3 4; do chat granite-3.1-8b-instruct -D - -o /dev/null | grep -i x-inference-pod; done
+----
+
+. Bring it back:
++
+[source,role="execute"]
+----
+oc scale statefulset/granite --replicas=2
+----
+
+. Errors from the model itself pass straight through. The simulator fails on demand when you send an `X-Return-Error` header:
++
+[source,role="execute"]
+----
+chat qwen3-8b -H 'X-Return-Error: 429' -w '\n%{http_code}\n'
+----
+
+=== Verify
+
+Expected output from the comparison:
+
+----
+x-inference-pod: granite-0
+x-inference-pod: granite-1
+x-inference-pod: granite-0
+x-inference-pod: granite-1
+x-inference-pod: qwen-77579855fb-9gvhw
+x-inference-pod: qwen-77579855fb-9gvhw
+x-inference-pod: qwen-77579855fb-9gvhw
+x-inference-pod: qwen-77579855fb-9gvhw
+----
+
+Expected output with one granite pod:
+
+----
+{"status":"ok","clusters":{"total":1,"healthy":1,"degraded":0,"detail":{"granite":{"healthy":1,"unhealthy":1,"total":2}}}}
+x-inference-pod: granite-0
+x-inference-pod: granite-0
+x-inference-pod: granite-0
+x-inference-pod: granite-0
+----
+
+* **granite** alternates between pods. Its headless Service gives each pod a DNS name, so Praxis lists both pods as endpoints, chooses between them and health-checks each one.
+* **qwen** goes through an ordinary ClusterIP Service. Praxis sees one address and Kubernetes chooses the pod behind it.
+* When `granite-1` disappeared, Praxis marked it unhealthy and sent everything to `granite-0`
+* The simulated 429 reached the client unchanged
+
+Per-pod endpoints give you the proxy's own balancing and health checks. With llm-d, they also allow model-aware pod picking.
+
+== Exercise 3: Streaming
+
+. Ask for a streamed response:
++
+[source,role="execute"]
+----
+curl -sN $AI/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"qwen3-8b","max_tokens":10,"stream":true,"messages":[{"role":"user","content":"hi"}]}'
+----
+
+=== Verify
+
+Expected output (truncated):
+
+----
+data: {"id":"chatcmpl-...","model":"qwen3-8b","object":"chat.completion.chunk",...}
+
+data: {"id":"chatcmpl-...","model":"qwen3-8b","object":"chat.completion.chunk",...}
+...
+----
+
+* Tokens arrive one server-sent event (`data:`) at a time, with about 300 ms before the first
+* Praxis passes the stream through without buffering it
+
+== Exercise 4: Anthropic clients, OpenAI backends
+
+The simulated models are reached on OpenAI Chat Completions. Praxis AI can serve clients that speak the Anthropic Messages API, such as Claude Code, from those backends.
+
+. Send an Anthropic Messages request:
++
+[source,role="execute"]
+----
+curl -s $AI/v1/messages -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"qwen3-8b","max_tokens":20,"messages":[{"role":"user","content":"hello"}]}'; echo
+----
+
+. Send it again as a stream, and list the event types:
++
+[source,role="execute"]
+----
+curl -sN $AI/v1/messages -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"qwen3-8b","max_tokens":5,"stream":true,"messages":[{"role":"user","content":"hello"}]}' \
+  | grep '^event' | sort | uniq -c
+----
+
+. Ask for extended thinking, which OpenAI Chat Completions can't express:
++
+[source,role="execute"]
+----
+curl -s $AI/v1/messages -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"qwen3-8b","max_tokens":50,"thinking":{"type":"enabled","budget_tokens":20},"messages":[{"role":"user","content":"hi"}]}'; echo
+----
+
+=== Verify
+
+Expected output from the first request (trimmed):
+
+----
+{"content":[{"type":"text","text":"..."}],"id":"msg_chatcmpl-...","model":"qwen3-8b","role":"assistant","stop_reason":"end_turn","type":"message","usage":{"input_tokens":...
+----
+
+Expected output from the stream:
+
+----
+   4 event: content_block_delta
+   1 event: content_block_start
+   1 event: content_block_stop
+   1 event: message_delta
+   1 event: message_start
+   1 event: message_stop
+----
+
+Expected output from the thinking request:
+
+----
+{"error":{"message":"`thinking` cannot be translated to Chat Completions","type":"invalid_request_error"},"request_id":null,"type":"error"}
+----
+
+* The client got an Anthropic-format reply. Its `id` starts with `msg_chatcmpl-`: the backend answered in OpenAI Chat format, and Praxis translated the request, the path (`/v1/messages` to `/v1/chat/completions`) and the response.
+* Streaming was translated into Anthropic's event sequence
+* Translation is strict: a feature with no equivalent is refused with a 400, not silently dropped
+
+For clients that send such features by default, the `allow_lossy_features` option on the translation filter strips them and reports that it did.
+
+== Exercise 5: Tokens and time to first token
+
+AI cost and capacity are measured in tokens. The `token_count` and `time_to_first_token` filters turn what the backend reports into per-model metrics.
+
+. Generate some streaming traffic for both models:
++
+[source,role="execute"]
+----
+for m in granite-3.1-8b-instruct qwen3-8b; do for i in 1 2 3; do
+  curl -sN -o /dev/null $AI/v1/chat/completions -H 'content-type: application/json' \
+    -d "{\"model\":\"$m\",\"max_tokens\":30,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+done; done
+----
+
+. Read the AI metrics:
++
+[source,role="execute"]
+----
+oc exec deploy/praxis-ai -- wget -qO- http://127.0.0.1:9902/metrics \
+  | grep -E '^praxis_ai_(prompt_tokens_total|output_tokens_total|ttft_seconds_(sum|count))'
+----
+
+. In the **OCP Console** tab, go to **Observe** → **Metrics** and run:
++
+[source,promql]
+----
+sum by (model) (rate(praxis_ai_output_tokens_total{namespace="praxis"}[5m]))
+sum by (model) (rate(praxis_ai_ttft_seconds_sum[5m])) / sum by (model) (rate(praxis_ai_ttft_seconds_count[5m]))
+----
+
+=== Verify
+
+Expected output (counts vary):
+
+----
+praxis_ai_prompt_tokens_total{model="qwen3-8b",cluster="qwen"} 12
+praxis_ai_prompt_tokens_total{model="granite-3.1-8b-instruct",cluster="granite"} 9
+praxis_ai_output_tokens_total{model="granite-3.1-8b-instruct",cluster="granite"} 4
+praxis_ai_output_tokens_total{model="qwen3-8b",cluster="qwen"} 9
+praxis_ai_ttft_seconds_sum{model="qwen3-8b",cluster="qwen"} 0.60859592
+praxis_ai_ttft_seconds_count{model="qwen3-8b",cluster="qwen"} 2
+praxis_ai_ttft_seconds_sum{model="granite-3.1-8b-instruct",cluster="granite"} 0.154153391
+praxis_ai_ttft_seconds_count{model="granite-3.1-8b-instruct",cluster="granite"} 1
+----
+
+* Token counters are labeled by **model** and **cluster**
+* Time to first token (sum divided by count) is about 0.15 s for granite and 0.30 s for qwen, matching the latency the simulators were configured with
+
+[NOTE]
+====
+Praxis AI also has a `token_usage_headers` filter, but it can't add token headers for OpenAI or Anthropic backends. Their usage numbers arrive at the end of the response body, after the response headers are already sent. Use the metrics instead.
+====
+
+== Exercise 6: Add a model with zero downtime
+
+Bring a third model online while the gateway keeps serving.
+
+. Deploy a simulated `llama-3.1-8b-instruct`:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$30-llama.yaml[]
+EOF
+oc rollout status deploy/llama --timeout=120s
+----
+
+. Confirm the gateway doesn't know it yet:
++
+[source,role="execute"]
+----
+chat llama-3.1-8b-instruct -i | head -1
+----
+
+. Edit the gateway configuration:
++
+[source,role="execute"]
+----
+oc edit configmap praxis-ai-config
+----
++
+Add two things:
++
+* A route in the `router` filter: `x-model: llama-3.1-8b-instruct` to `cluster: llama`
+* A cluster in the `load_balancer` filter named `llama`, with endpoint `llama.praxis.svc.cluster.local:8000`, and the same host name in `trusted_private_endpoints`
+
+. Wait for the reload, then ask the new model:
++
+[source,role="execute"]
+----
+until oc logs deploy/praxis-ai --since=2m | grep -q 'reload complete'; do sleep 5; done
+chat llama-3.1-8b-instruct | head -c 200; echo
+----
+
+.Solution: the complete configuration with the llama route and cluster
+[%collapsible]
+====
+Apply this complete ConfigMap instead of editing by hand:
+
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$20-ai-configmap-with-llama.yaml[]
+EOF
+----
+====
+
+=== Verify
+
+Expected output:
+
+----
+HTTP/1.1 404 Not Found
+{"id":"chatcmpl-...","model":"llama-3.1-8b-instruct","object":"chat.completion",...
+----
+
+* Before the change, `llama-3.1-8b-instruct` got a 404
+* After the reload, it answers, and `oc get pods -l app=praxis-ai` still shows `RESTARTS` at `0`
+
+== What Praxis AI adds on top of core
+
+[cols="3,2,2",options="header"]
+|===
+| Capability | Praxis core | Praxis AI
+
+| Listeners, chains, routing, load balancing, rate limits, health checks, hot reload, metrics
+| Yes
+| Yes (same core)
+
+| Knows which AI API a request uses
+| No
+| Yes, `ai_operation`
+
+| Route on the body's `model`
+| Partly, with the generic `json_body_field`
+| Yes, `model_to_header`
+
+| Anthropic and OpenAI translation, streaming included
+| No
+| Yes
+
+| Token metrics and time to first token, per model
+| No (requests only)
+| Yes
+
+| Guardrails, token budgets, MCP and A2A routing, OpenAI Responses state
+| No
+| Yes (some are experimental and not in the published image)
+|===
+
+== Troubleshooting
+
+**Issue**: The `praxis-ai` pod crashes with `fatal: unknown filter type`
+
+**Solution**: The configuration names a filter the published image wasn't built with. Experimental filters such as `token_ceiling`, `token_rate_limit` and the OpenAI Responses filters need a custom build or an `-experimental` image.
+
+**Issue**: A new route never takes effect
+
+**Solution**: Check `oc logs deploy/praxis-ai | grep -i reload`. A `reload failed` line explains what was wrong, and the old configuration stays in place. A frequent cause is a route that names a cluster missing from the `load_balancer` filter.
+
+**Issue**: `chat: command not found`
+
+**Solution**: The terminal reconnected and lost the helper. Rerun the block in "Deploy the Praxis AI gateway" that defines `AI` and `chat`.
+
+== Learning outcomes
+
+By completing this module, you should now understand:
+
+* ✓ How Praxis AI applies the classify, promote, route pattern to the `model` in the request body
+* ✓ When to let Praxis balance model pods and when to let a Kubernetes Service do it
+* ✓ How API translation lets Anthropic clients use OpenAI-only model servers
+* ✓ Why AI traffic is measured in tokens and time to first token, and where to see them
+
+== Module summary
+
+You ran Praxis AI as an AI gateway: one endpoint for many models, per-pod balancing and failover, streaming, Anthropic to OpenAI translation, and token metrics, and you added a model with no downtime. Continue to the xref:06-conclusion.adoc[Conclusion] for a recap and next steps.

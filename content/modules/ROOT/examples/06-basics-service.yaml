@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: praxis-basics
+  namespace: praxis
+  labels:
+    app: praxis-basics
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  selector:
+    app: praxis-basics
+  ports:
+    - name: web
+      port: 8080
+      targetPort: web
+    - name: limited
+      port: 8081
+      targetPort: limited
+    - name: metrics
+      port: 9902
+      targetPort: metrics

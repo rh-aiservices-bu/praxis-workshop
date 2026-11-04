@@ -1,0 +1,13 @@
+// Shared attributes for every page. Environment values come from
+// content/antora.yml, which Showroom fills in at runtime.
+:console_url: {openshift_console_url}
+:api_url: {openshift_api_url}
+:admin_user: {openshift_cluster_admin_username}
+:admin_password: {openshift_cluster_admin_password}
+:namespace: praxis
+
+// Versions this lab was tested with.
+:ocp_version: 4.20
+:praxis_version: 0.7.5
+:praxis_ai_version: 0.9.0
+:sim_version: v1.1.0

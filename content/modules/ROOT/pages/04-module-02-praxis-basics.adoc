@@ -1,0 +1,533 @@
+= Module 2: Praxis basics
+include::partial$_attributes.adoc[]
+:source-highlighter: rouge
+:toc: macro
+:toclevels: 1
+
+In this module you deploy Praxis core {praxis_version} in front of the three echo servers and work through its key features: how the configuration fits together, routing, load balancing, rate limiting, health checks, hot reload and metrics.
+
+toc::[]
+
+== Learning objectives
+
+By the end of this module, you'll be able to:
+
+* Read a Praxis configuration and explain the pipeline each listener builds
+* Route requests by path and header, and balance them with round-robin and weighted strategies
+* Protect backends with a rate limit and active health checks
+* Change configuration live from a ConfigMap and confirm that invalid changes are rejected
+
+== Deploy the Praxis gateway
+
+The gateway is five pieces: the Praxis configuration, the Praxis pod, a Service, a Route per listener and a ServiceMonitor for metrics.
+
+. Create the ConfigMap that holds the Praxis configuration. It defines two listeners, the filter chains they run and the backend clusters; you read it in detail in Exercise 1:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$06-basics-configmap.yaml[]
+EOF
+----
+
+. Create the Deployment that runs Praxis core {praxis_version}. It starts `praxis` with the configuration from the ConfigMap, mounted as a directory so that ConfigMap updates reach the running pod. The liveness probe (`/healthy`) and readiness probe (`/ready`) use the metrics port 9902:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$06-basics-deployment.yaml[]
+EOF
+----
+
+. Create the Service. It exposes the `web` listener on port 8080, the `limited` listener on port 8081 and health and metrics on port 9902:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$06-basics-service.yaml[]
+EOF
+----
+
+. Create the two Routes, one per listener. Both use edge TLS, so you reach them over HTTPS:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$06-basics-routes.yaml[]
+EOF
+----
+
+. Create the ServiceMonitor. It tells OpenShift user workload monitoring to scrape Praxis metrics from port 9902 every 15 seconds:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$06-basics-servicemonitor.yaml[]
+EOF
+----
+
+. Wait for it to be ready:
++
+[source,role="execute"]
+----
+oc rollout status deploy/praxis-basics --timeout=120s
+----
+
+. Save the two Route URLs in shell variables. Rerun this block if your terminal reconnects.
++
+[source,role="execute"]
+----
+B=https://$(oc get route praxis-basics -o jsonpath='{.spec.host}')
+L=https://$(oc get route praxis-basics-limited -o jsonpath='{.spec.host}')
+echo "web: $B"; echo "limited: $L"
+----
+
+=== Verify
+
+[source,role="execute"]
+----
+oc logs deploy/praxis-basics | grep -E 'listener registered|health check task'
+----
+
+Expected output (timestamps omitted):
+
+----
+INFO ... spawning health check task cluster=app check_type=http interval_ms=2000 timeout_ms=1000 endpoints=2
+INFO ... HTTP listener registered name=web address=0.0.0.0:8080 tls=false
+INFO ... HTTP listener registered name=limited address=0.0.0.0:8081 tls=false
+----
+
+* Two listeners, `web` and `limited`, are registered
+* A health check task is running for the `app` cluster
+
+[NOTE]
+====
+The startup log also shows two warnings. The metrics listener binds to `0.0.0.0` so that kubelet probes and Prometheus can reach it. The `rate` key "resembles" `name` is a false positive that the project's own rate-limiting example triggers too.
+====
+
+== Exercise 1: Listeners, filter chains and pipelines
+
+Start by reading the configuration you just deployed.
+
+. Print the configuration:
++
+[source,role="execute"]
+----
+oc get cm praxis-basics-config -o jsonpath='{.data.praxis\.yaml}'
+----
+
+. Find the `listeners` and `filter_chains` sections. The two listeners use the same chains, and `limited` adds one:
++
+[source,yaml]
+----
+listeners:
+  - name: web
+    address: "0.0.0.0:8080"
+    filter_chains: [observability, edge, routing]
+  - name: limited
+    address: "0.0.0.0:8081"
+    filter_chains: [observability, throttle, edge, routing]
+----
++
+At startup Praxis joins each listener's chains, in order, into one pipeline:
++
+----
+listener web:     [observability] + [edge] + [routing]
+  -> request_id, access_log, headers, static_response, router, load_balancer
+
+listener limited: [observability] + [throttle] + [edge] + [routing]
+  -> request_id, access_log, rate_limit, headers, static_response, router, load_balancer
+----
++
+The two listeners differ by one chain name, and no filter configuration is duplicated. Each listener gets its own copy of the filters, so stateful filters such as a rate limiter keep separate state per listener.
+
+. See a filter answer a request on its own. The `static_response` filter has a condition, `when: path: "/"`, so it answers only `/`:
++
+[source,role="execute"]
+----
+curl -i $B/
+----
+
+. Request a path with no matching route:
++
+[source,role="execute"]
+----
+curl -i $B/nope
+----
+
+=== Verify
+
+Expected output from `curl -i $B/` (headers trimmed):
+
+----
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"lab": "praxis", "try": ["/app", "/canary", "/v2"]}
+----
+
+Expected first line from `curl -i $B/nope`:
+
+----
+HTTP/1.1 404 Not Found
+----
+
+* `/` is answered by `static_response`, so the router and load balancer never run and no backend is contacted
+* `/nope` passes `static_response` (its condition doesn't match) and reaches the router, which finds no route and returns 404
+
+== Exercise 2: Routing on path and headers
+
+The `router` filter picks a cluster for each request by comparing it with a list of routes. Each route has a `path_prefix`, and can also require a host or particular headers.
+
+**When does a prefix match?** The request path must start with the prefix at a `/` boundary. The prefix `/app` matches `/app` and `/app/hello`, but not `/application`.
+
+**What if several routes match?** Praxis picks the most specific one:
+
+* **The longer prefix wins.** Suppose there were routes for `/` and for `/api`. A request for `/api/users` matches both, and `/api` wins because it's longer. The `/` route then only catches requests that nothing more specific matches.
+* **On a tie, the route with more conditions wins.** If two matching routes have the same prefix, the one that also requires a host or headers is more specific.
+
+The order of the routes in the file doesn't matter.
+
+. Request `/app`, which routes to the `app` cluster (backend-a and backend-b), then `/application`, which the `/app` prefix doesn't match:
++
+[source,role="execute"]
+----
+curl -s $B/app | grep Name
+curl -s -o /dev/null -w '%{http_code}\n' $B/application
+----
+
+. Request `/v2` without, then with, the `x-version: v2` header:
++
+[source,role="execute"]
+----
+curl -s $B/v2 | grep Name
+curl -s -H 'x-version: v2' $B/v2 | grep Name
+----
++
+Two routes share the `/v2` prefix, so the tie rule applies. With the header, both routes match and the one that requires `x-version: v2` wins because it's more specific. Without the header, only the plain `/v2` route matches, so the request goes to the `app` cluster:
++
+[source,yaml]
+----
+- path_prefix: "/v2"
+  cluster: v2
+  headers:
+    x-version: v2
+- path_prefix: "/v2"
+  cluster: app
+----
+
+=== Verify
+
+Expected output for `/app` and `/application`:
+
+----
+Name: backend-a
+404
+----
+
+Expected output for the two `/v2` requests:
+
+----
+Name: backend-a
+Name: backend-c
+----
+
+* `/application` gets a 404: it starts with the letters `/app` but not the path segment `/app`, so no route matches
+* Without the header, `/v2` goes to the `app` cluster (backend-a or backend-b)
+* With `x-version: v2`, it goes to backend-c
+
+== Exercise 3: Load balancing and header changes
+
+The `load_balancer` filter picks an endpoint inside the chosen cluster.
+
+. Send four requests to `/app`:
++
+[source,role="execute"]
+----
+for i in 1 2 3 4; do curl -s $B/app | grep Name; done
+----
+
+. Send twenty requests to `/canary` and count where they went:
++
+[source,role="execute"]
+----
+for i in $(seq 1 20); do curl -s $B/canary | grep Name; done | sort | uniq -c
+----
++
+The `canary` cluster weights its endpoints 3 and 1:
++
+[source,yaml]
+----
+- name: canary
+  load_balancer_strategy: round_robin
+  endpoints:
+    - address: "backend-a.praxis.svc.cluster.local:8080"
+      weight: 3
+    - address: "backend-c.praxis.svc.cluster.local:8080"
+      weight: 1
+----
++
+Other strategies include least connections, consistent hashing, power of two choices and zone-aware balancing.
+
+. Look at the full request the backend received:
++
+[source,role="execute"]
+----
+curl -s $B/app/hello
+----
+
+. Look at the response headers Praxis added:
++
+[source,role="execute"]
+----
+curl -si $B/app | grep -i -E 'x-powered-by|x-request-id'
+----
+
+=== Verify
+
+Expected output for `/app` and `/canary`:
+
+----
+Name: backend-a
+Name: backend-b
+Name: backend-a
+Name: backend-b
+
+     15 Name: backend-a
+      5 Name: backend-c
+----
+
+Expected lines in the echoed request:
+
+----
+Via: 1.1 praxis
+X-Request-Id: 5f65ba4c192224e89c71000000000006
+X-Via: praxis-lab
+----
+
+* `/app` alternates between backend-a and backend-b
+* `/canary` gives exactly 15 and 5: weighted round robin is deterministic
+* The `headers` filter added `X-Via`, `request_id` added `X-Request-Id`, and Praxis added `Via`
+* The response carries `x-powered-by: praxis` and the same `X-Request-Id`
+
+The echo also shows `Forwarded` and `X-Forwarded-*` headers. Those come from the OpenShift router, a second proxy in front of Praxis.
+
+Each `load_balancer` cluster lists its backends' DNS names in `trusted_private_endpoints`. Service names resolve to private cluster IPs, and without that allowlist Praxis refuses to connect to them.
+
+== Exercise 4: Rate limiting
+
+The `limited` listener runs the extra `throttle` chain: a `rate_limit` filter with a token bucket that holds 4 requests and refills at 2 per second.
+
+. Send ten quick requests through the limited Route:
++
+[source,role="execute"]
+----
+for i in $(seq 1 10); do curl -s -o /dev/null -w '%{http_code} ' $L/app; done; echo
+----
+
+. Look at the headers on a rejected request:
++
+[source,role="execute"]
+----
+curl -si $L/app | grep -i -E '^HTTP|ratelimit|retry-after'
+----
+
+. Send the same ten requests through the `web` Route:
++
+[source,role="execute"]
+----
+for i in $(seq 1 10); do curl -s -o /dev/null -w '%{http_code} ' $B/app; done; echo
+----
+
+=== Verify
+
+Expected output (the exact count before the first 429 varies):
+
+----
+200 200 200 200 200 200 429 429 429 429
+HTTP/1.1 429 Too Many Requests
+retry-after: 1
+x-ratelimit-limit: 4
+x-ratelimit-remaining: 0
+200 200 200 200 200 200 200 200 200 200
+----
+
+* The limited Route returns 429 with `Retry-After` and `X-RateLimit-*` headers once the bucket is empty
+* Usually 5 or 6 requests succeed, not 4, because the bucket refills while requests cross the network
+* The `web` Route is never limited
+
+Why a separate listener rather than a condition such as `when: path_prefix: /limited`? Praxis treats `rate_limit` as a security filter and refuses to start if a security filter has a condition, because a condition is a way around it. You can opt in under `insecure_options`, but a separate listener keeps the limit unconditional.
+
+== Exercise 5: Health checks
+
+The `app` cluster probes `GET /health` on each backend every 2 seconds and removes a backend that fails twice. whoami lets you change what its `/health` returns with a POST. The whoami image has no shell, so you send the POST from the Praxis pod, which has busybox `wget`.
+
+. Make backend-a report itself unhealthy:
++
+[source,role="execute"]
+----
+H=http://backend-a.praxis.svc.cluster.local:8080/health
+oc exec deploy/praxis-basics -- wget -qO- --post-data=500 $H
+sleep 5
+----
+
+. Check Praxis's readiness report and send some traffic:
++
+[source,role="execute"]
+----
+oc exec deploy/praxis-basics -- wget -qO- http://127.0.0.1:9902/ready; echo
+for i in 1 2 3 4; do curl -s $B/app | grep Name; done
+----
+
+. Make backend-a healthy again:
++
+[source,role="execute"]
+----
+oc exec deploy/praxis-basics -- wget -qO- --post-data=200 $H
+----
+
+=== Verify
+
+Expected output while backend-a is failing:
+
+----
+{"status":"ok","clusters":{"total":1,"healthy":1,"degraded":0,"detail":{"app":{"healthy":1,"unhealthy":1,"total":2}}}}
+Name: backend-b
+Name: backend-b
+Name: backend-b
+Name: backend-b
+----
+
+* `/ready` reports one healthy and one unhealthy endpoint in `app`
+* All traffic goes to backend-b until backend-a recovers
+
+`/ready` is also the Deployment's readiness probe, and `/healthy` its liveness probe, both on the metrics port 9902.
+
+== Exercise 6: Hot reload from the ConfigMap
+
+Praxis watches its configuration file. When the file changes, it validates the new configuration, rebuilds the pipelines and swaps them in. In-flight requests finish on the old pipeline.
+
+. Change the `X-Powered-By` response header from `praxis` to `praxis-reloaded`:
++
+[source,role="execute"]
+----
+oc get cm praxis-basics-config -o yaml \
+  | sed 's/value: praxis$/value: praxis-reloaded/' | oc apply -f -
+----
+
+. Wait for the reload. The kubelet updates the mounted ConfigMap, usually within a minute:
++
+[source,role="execute"]
+----
+until oc logs deploy/praxis-basics --since=2m | grep -q 'reload complete'; do sleep 5; done
+oc logs deploy/praxis-basics --since=2m | grep -i reload
+----
+
+. Check the header and the pod:
++
+[source,role="execute"]
+----
+curl -si $B/app | grep -i x-powered-by
+oc get pods -l app=praxis-basics
+----
+
+. Now break it: point the `/canary` route at a cluster that doesn't exist:
++
+[source,role="execute"]
+----
+oc get cm praxis-basics-config -o yaml \
+  | sed 's/cluster: canary$/cluster: does-not-exist/' | oc apply -f -
+until oc logs deploy/praxis-basics --since=2m | grep -q 'reload failed'; do sleep 5; done
+oc logs deploy/praxis-basics --since=2m | grep -i 'reload failed'
+curl -s $B/canary | grep Name
+----
+
+. Restore the original configuration:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$06-basics-configmap.yaml[]
+EOF
+----
+
+=== Verify
+
+Expected output after the first change:
+
+----
+x-powered-by: praxis-reloaded
+NAME                             READY   STATUS    RESTARTS   AGE
+praxis-basics-7d9c6b8f5d-k2x4p   1/1     Running   0          12m
+----
+
+Expected output after the broken change:
+
+----
+ERROR ... config reload failed error=pipeline validation failed for listener 'web': cluster-selecting filter references cluster 'does-not-exist' which is not defined in the load_balancer configuration
+Name: backend-a
+----
+
+* The valid change went live with `RESTARTS` still `0`
+* The invalid change was rejected, and `/canary` kept working on the old configuration
+
+[TIP]
+====
+Mount the ConfigMap as a directory, not with `subPath`. Kubernetes only updates directory mounts, so a `subPath` mount never sees changes. Routes, filters, clusters and weights reload live; listener addresses, protocol and TLS on or off need a restart.
+====
+
+== Exercise 7: Observability
+
+. Look at the access log, one line per request:
++
+[source,role="execute"]
+----
+oc logs deploy/praxis-basics | grep access_log | tail -3
+----
+
+. List the Prometheus metrics Praxis exposes:
++
+[source,role="execute"]
+----
+oc exec deploy/praxis-basics -- wget -qO- http://127.0.0.1:9902/metrics \
+  | grep '^praxis_' | cut -d'{' -f1 | sort -u
+----
+
+. In the **OCP Console** tab, go to **Observe** → **Metrics** and run these queries. The ServiceMonitor feeds Praxis metrics into OpenShift user workload monitoring.
++
+[source,promql]
+----
+sum by (job) (rate(praxis_http_requests_total{namespace="praxis"}[5m]))
+praxis_upstream_healthy_endpoints{namespace="praxis"}
+praxis_config_reload_total{namespace="praxis"}
+----
+
+=== Verify
+
+Expected metric names include:
+
+----
+praxis_config_reload_total
+praxis_http_request_duration_seconds
+praxis_http_requests_total
+praxis_rate_limit_limited_total
+praxis_upstream_healthy_endpoints
+praxis_upstream_requests_total
+----
+
+* The access log shows method, path, status, duration and the cluster and upstream chosen
+* `praxis_config_reload_total` shows both the successful and the failed reload from Exercise 6
+* The same metrics are queryable in the OpenShift console
+
+== Learning outcomes
+
+By completing this module, you should now understand:
+
+* ✓ How a listener's chains become one pipeline, and how filters short-circuit it
+* ✓ How the router and load balancer split the decision of where a request goes
+* ✓ Why Praxis refuses conditional security filters and unlisted private backends
+* ✓ How hot reload swaps configuration safely, and what happens to an invalid change
+
+== Module summary
+
+You deployed Praxis core and used its key features: pipelines built from chains, path and header routing, round-robin and weighted load balancing, rate limiting, active health checks, hot reload from a ConfigMap, and metrics in OpenShift monitoring. In xref:05-module-03-ai-gateway.adoc[Module 3: Praxis AI gateway], the same building blocks route AI traffic.

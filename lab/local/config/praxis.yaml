@@ -1,0 +1,133 @@
+# Praxis Learning Lab
+#
+# One listener, several paths, each exercising a different filter:
+#
+#   /            static_response   (no upstream at all)
+#   /app         round-robin across backend-a + backend-b, active health checks
+#   /canary      weighted 3:1 split between backend-a and backend-c
+#   /v2          header-based routing: "x-version: v2" -> backend-c
+#
+# A second listener on :8081 runs the same chains behind a rate_limit
+# (2 req/s, burst 4).
+#
+# Every request passes through request_id, access_log and a headers filter.
+# Backends are traefik/whoami containers that echo back what they received,
+# so you can see exactly which headers Praxis added.
+
+admin:
+  # Health + metrics listener. Bound to 0.0.0.0 so the host can reach it
+  # through the published port; in production keep it on a private interface.
+  metrics_address: "0.0.0.0:9902"
+  verbose: true
+
+metrics:
+  filter_duration: true
+
+# Top-level clusters own endpoints and health checks. A load_balancer entry
+# with the same name is a *reference*: it inherits only the endpoint list.
+# Connection settings (trusted_private_endpoints, tls, timeouts, strategy)
+# take effect where the load_balancer declares the cluster, so they are set
+# there too (see the routing chain below).
+clusters:
+  - name: app
+    endpoints:
+      - "backend-a:80"
+      - "backend-b:80"
+    # Lets the health checker probe these private addresses.
+    trusted_private_endpoints: [backend-a, backend-b]
+    health_check:
+      type: http
+      path: "/health"
+      expected_status: 200
+      interval_ms: 2000
+      timeout_ms: 1000
+      healthy_threshold: 1
+      unhealthy_threshold: 2
+
+listeners:
+  - name: web
+    address: "0.0.0.0:8080"
+    filter_chains: [observability, edge, routing]
+
+  # Same chains plus a rate limit in front. rate_limit is a security filter,
+  # and Praxis refuses to let a security filter be skipped by a condition
+  # (that is a bypass) unless you opt in under insecure_options. A separate
+  # listener keeps the limit unconditional.
+  - name: limited
+    address: "0.0.0.0:8081"
+    filter_chains: [observability, throttle, edge, routing]
+
+filter_chains:
+  - name: observability
+    filters:
+      - filter: request_id
+      - filter: access_log
+
+  - name: throttle
+    filters:
+      - filter: rate_limit
+        mode: global
+        rate: 2
+        burst: 4
+
+  - name: edge
+    filters:
+      - filter: headers
+        request_add:
+          - name: X-Via
+            value: praxis-lab
+        response_set:
+          - name: X-Powered-By
+            value: praxis
+
+      - filter: static_response
+        status: 200
+        headers:
+          - name: Content-Type
+            value: application/json
+        body: '{"lab": "praxis", "try": ["/app", "/canary", "/v2", ":8081/app"]}'
+        conditions:
+          - when:
+              path: "/"
+
+  - name: routing
+    filters:
+      - filter: router
+        routes:
+          - path_prefix: "/app"
+            cluster: app
+          - path_prefix: "/canary"
+            cluster: canary
+          # Same prefix, two routes: the header-matching one wins when the
+          # header is present, otherwise traffic falls through to "app".
+          - path_prefix: "/v2"
+            cluster: v2
+            headers:
+              x-version: v2
+          - path_prefix: "/v2"
+            cluster: app
+
+      - filter: load_balancer
+        clusters:
+          # Reference to the top-level "app": endpoints come from there.
+          # Container DNS names resolve to 10.89.x.x (RFC 1918). Praxis
+          # refuses private upstreams by default (an SSRF guard); this
+          # allowlists just these names. On OpenShift you would list the
+          # Service DNS names instead.
+          - name: app
+            trusted_private_endpoints: [backend-a, backend-b]
+
+          # Fully inline clusters: no top-level declaration, no health check.
+          - name: canary
+            load_balancer_strategy: round_robin
+            endpoints:
+              - address: "backend-a:80"
+                weight: 3
+              - address: "backend-c:80"
+                weight: 1
+            trusted_private_endpoints: [backend-a, backend-c]
+
+          - name: v2
+            endpoints:
+              - "backend-c:80"
+            trusted_private_endpoints: [backend-c]

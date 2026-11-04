@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: praxis-basics-config
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+data:
+  praxis.yaml: |
+    admin:
+      # Kubelet probes and Prometheus reach the pod IP, so bind all interfaces.
+      metrics_address: "0.0.0.0:9902"
+      verbose: true
+
+    metrics:
+      filter_duration: true
+
+    # Top-level clusters carry health checks. In Praxis 0.7.5 the
+    # load_balancer entries below must repeat the endpoints.
+    clusters:
+      - name: app
+        endpoints:
+          - "backend-a.praxis.svc.cluster.local:8080"
+          - "backend-b.praxis.svc.cluster.local:8080"
+        # Lets the health checker probe these private addresses.
+        trusted_private_endpoints:
+          - backend-a.praxis.svc.cluster.local
+          - backend-b.praxis.svc.cluster.local
+        health_check:
+          type: http
+          path: "/health"
+          expected_status: 200
+          interval_ms: 2000
+          timeout_ms: 1000
+          healthy_threshold: 1
+          unhealthy_threshold: 2
+
+    listeners:
+      - name: web
+        address: "0.0.0.0:8080"
+        filter_chains: [observability, edge, routing]
+
+      # Same chains plus a rate limit in front. rate_limit is a security
+      # filter, and Praxis refuses to let a security filter be skipped by a
+      # condition (that is a bypass) unless you opt in under
+      # insecure_options. A separate listener keeps the limit unconditional.
+      - name: limited
+        address: "0.0.0.0:8081"
+        filter_chains: [observability, throttle, edge, routing]
+
+    filter_chains:
+      - name: observability
+        filters:
+          - filter: request_id
+          - filter: access_log
+
+      - name: throttle
+        filters:
+          - filter: rate_limit
+            mode: global
+            rate: 2
+            burst: 4
+
+      - name: edge
+        filters:
+          - filter: headers
+            request_add:
+              - name: X-Via
+                value: praxis-lab
+            response_set:
+              - name: X-Powered-By
+                value: praxis
+
+          - filter: static_response
+            status: 200
+            headers:
+              - name: Content-Type
+                value: application/json
+            body: '{"lab": "praxis", "try": ["/app", "/canary", "/v2"]}'
+            conditions:
+              - when:
+                  path: "/"
+
+      - name: routing
+        filters:
+          - filter: router
+            routes:
+              - path_prefix: "/app"
+                cluster: app
+              - path_prefix: "/canary"
+                cluster: canary
+              # Same prefix, two routes: the header-matching one wins when
+              # the header is present, otherwise traffic falls through to app.
+              - path_prefix: "/v2"
+                cluster: v2
+                headers:
+                  x-version: v2
+              - path_prefix: "/v2"
+                cluster: app
+
+          - filter: load_balancer
+            clusters:
+              # Service DNS names resolve to private cluster IPs. Praxis
+              # refuses private upstreams by default (an SSRF guard); this
+              # allowlists just these names.
+              - name: app
+                endpoints:
+                  - "backend-a.praxis.svc.cluster.local:8080"
+                  - "backend-b.praxis.svc.cluster.local:8080"
+                trusted_private_endpoints:
+                  - backend-a.praxis.svc.cluster.local
+                  - backend-b.praxis.svc.cluster.local
+
+              - name: canary
+                load_balancer_strategy: round_robin
+                endpoints:
+                  - address: "backend-a.praxis.svc.cluster.local:8080"
+                    weight: 3
+                  - address: "backend-c.praxis.svc.cluster.local:8080"
+                    weight: 1
+                trusted_private_endpoints:
+                  - backend-a.praxis.svc.cluster.local
+                  - backend-c.praxis.svc.cluster.local
+
+              - name: v2
+                endpoints:
+                  - "backend-c.praxis.svc.cluster.local:8080"
+                trusted_private_endpoints:
+                  - backend-c.praxis.svc.cluster.local

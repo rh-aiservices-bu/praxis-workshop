@@ -1,0 +1,72 @@
+= Praxis on OpenShift: Showroom lab guide
+
+A hands-on workshop for link:https://github.com/praxis-proxy/praxis[Praxis^], the Rust proxy framework, and link:https://github.com/praxis-proxy/ai[Praxis AI^], the AI gateway built on it. It runs on OpenShift with published images and simulated models: no local build and no GPUs.
+
+This repository contains:
+
+* The **Showroom site** at the root: Red Hat Showroom content built with link:https://antora.org[Antora^] and the RHDP Showroom theme (`rh-one-2025`)
+* The **lab source** in `lab/`: tested OpenShift manifests and scripts, background docs, and an optional local podman version
+
+== Layout
+
+[source,text]
+----
+site.yml                         Antora playbook (title, theme)
+ui-config.yml                    Showroom right panel: Terminal + OCP Console
+content/antora.yml               Component and environment attributes
+content/modules/ROOT/
+  nav.adoc                       Navigation
+  partials/_attributes.adoc      Shared attributes and tested versions
+  pages/                         index, overview, details, 3 modules, conclusion
+  examples/                      Manifests, included inline by the pages
+lab/
+  README.md                      Lab overview
+  CONCEPTS.md, AI.md             Background: how Praxis and Praxis AI work
+  openshift/                     The lab: manifests, setup.sh, teardown.sh, walkthrough
+  local/                         Optional: podman version for a laptop
+----
+
+The manifests in `content/modules/ROOT/examples/` are copies of the tested files in `lab/openshift/`. Pages include them with `include::example$<file>[]` inside `oc apply` commands, so learners don't need a copy of this repository. Keep the two copies in sync.
+
+Some manifests are split into one file per step, so each block learners run stays short:
+
+* `05-echo-service.yaml` and `05-echo-deployment.yaml` are one-server templates applied in a loop. Together they must produce the objects in `lab/openshift/05-echo.yaml`.
+* The four `10-*.yaml` files together must match `lab/openshift/10-models.yaml`.
+* The five `06-basics-*.yaml` files together must match `lab/openshift/06-praxis-basics.yaml`.
+* The five `20-ai-*.yaml` files (excluding `-with-llama`) together must match `lab/openshift/20-praxis-ai.yaml`.
+* `20-ai-configmap-with-llama.yaml` is the ConfigMap from `lab/openshift/solutions/20-praxis-ai-with-llama.yaml`; the Module 3 exercise solution applies only the ConfigMap.
+
+== Running the lab without Showroom
+
+[source,sh]
+----
+lab/openshift/setup.sh
+----
+
+Then follow `lab/openshift/README.md`. Everything goes into the `praxis` namespace; `lab/openshift/teardown.sh` removes it.
+
+== Publishing
+
+The GitHub Pages workflow in `.github/workflows/gh-pages.yml` builds the site with Antora and publishes it on pushes to `main`. Enable it under the repository's **Settings** → **Pages** → **Source: GitHub Actions**.
+
+For an RHDP catalog item, point the Showroom workload at this repository and `site.yml`.
+
+== Previewing locally
+
+From the root of this repository (it must be a git repository with at least one commit, because Antora reads content from git):
+
+[source,sh]
+----
+podman run --rm --name antora -v $PWD:/antora:z -p 8080:8080 -i -t ghcr.io/juliaaano/antora-viewer
+----
+
+Then open http://localhost:8080. Rerun the container after editing content; live reload isn't supported.
+
+To build the static site only:
+
+[source,sh]
+----
+npx antora@3.1 generate site.yml
+----
+
+The output goes to `www/`.

@@ -1,0 +1,93 @@
+= Conclusion and next steps
+include::partial$_attributes.adoc[]
+
+Congratulations! You've completed the Praxis on OpenShift workshop.
+
+== What you've learned
+
+Throughout this workshop, you've gained hands-on experience with:
+
+* ✅ How Praxis builds a pipeline per listener from named filter chains, and how a request flows through it
+* ✅ Path and header routing, round-robin and weighted load balancing, rate limiting and active health checks
+* ✅ Hot reload from a ConfigMap, including how invalid changes are rejected
+* ✅ Routing AI traffic by the `model` in the request body, with Praxis balancing model pods itself
+* ✅ Serving Anthropic Messages clients from OpenAI Chat Completions backends, streaming included
+* ✅ Per-model token and time-to-first-token metrics in OpenShift monitoring
+
+You now have the skills to run Praxis as a general-purpose gateway and as an AI gateway on OpenShift.
+
+== Key takeaways
+
+. **Everything is a filter**: routing, load balancing, rate limiting and AI parsing all use the same filter model, arranged into chains and pipelines.
+. **Routing and load balancing are separate decisions**: the router picks a cluster, the load balancer picks an endpoint, and AI routing reuses both.
+. **Classify, promote, route**: turn something in the request, such as the `model` field, into a header, then route on the header.
+. **Safe by default**: private backends need an allowlist, reserved headers can't be spoofed, and invalid configuration never replaces a working one.
+. **Praxis AI is Praxis core plus AI filters**: one configuration model from proxy basics to the AI gateway.
+
+== Things to know before using Praxis for real
+
+These came up while building this workshop:
+
+* **Connection settings belong on the `load_balancer` cluster entries.** Proxied traffic uses the cluster as the `load_balancer` declares it. `trusted_private_endpoints` set only on a top-level cluster lets the health checker probe, but doesn't apply to requests.
+* **Praxis {praxis_version} needs endpoints repeated.** Each `load_balancer` cluster entry must list its own endpoints, even when a top-level cluster of the same name has them. Newer Praxis copies them automatically. Praxis AI {praxis_ai_version} is built on core {praxis_version}, so this applies to it too.
+* **Replies Praxis generates itself skip response-phase headers.** Static responses, 404s and 429s don't get headers that response filters add.
+* **Experimental filters aren't in the published images.** `token_ceiling`, `token_rate_limit` and the OpenAI Responses filters need a custom build or an `-experimental` image.
+* **`token_usage_headers` can't work with OpenAI or Anthropic backends.** Their usage arrives in the response body, after the headers are sent. Use the token metrics.
+* **The metrics listener must bind `0.0.0.0`** so kubelet probes and Prometheus can reach it. In production, restrict it with a NetworkPolicy.
+* **OpenShift's defaults just work.** The images run unmodified under `restricted-v2`. The only change needed was running whoami on port 8080.
+
+== Next steps
+
+=== Documentation and resources
+
+* link:https://github.com/praxis-proxy/praxis/blob/main/docs/features.md[Praxis features^]: the full list of core capabilities
+* link:https://github.com/praxis-proxy/praxis/blob/main/docs/filters/reference.md[Praxis filter reference^]: every built-in filter and its options
+* link:https://github.com/praxis-proxy/ai/blob/main/docs/features.md[Praxis AI features^]: AI filters, build features and what's experimental
+* link:https://github.com/praxis-proxy/praxis/tree/main/examples/configs[Praxis example configurations^]: working YAML for every core feature
+* link:https://github.com/praxis-proxy/ai/tree/main/examples/configs[Praxis AI example configurations^]: AI routing, translation, guardrails, token limits, MCP and A2A
+
+=== Practice projects
+
+. **Point the gateway at a real model**: swap a simulator for a model served by OpenShift AI, KServe or vLLM. Only the endpoint changes.
+. **Connect a coding agent**: point Claude Code at the gateway, with `allow_lossy_features` on the translation filter.
+. **Add guardrails**: put the `ai_guardrails` filter in front of a model, backed by a NeMo Guardrails service.
+. **Write a filter**: follow the link:https://github.com/praxis-proxy/praxis/blob/main/docs/filters/http-filter-tutorial.md[HTTP filter tutorial^] and compile your own filter into Praxis.
+
+== References
+
+=== Praxis projects
+
+* link:https://github.com/praxis-proxy/praxis[Praxis^]: the proxy framework and `praxis` binary. Used in: all modules
+* link:https://github.com/praxis-proxy/ai[Praxis AI^]: the AI gateway built on Praxis. Used in: Modules 1 and 3
+* link:https://github.com/praxis-proxy/praxis/blob/main/docs/architecture/overview.md[Praxis architecture overview^]: design principles, filters and pipelines. Used in: Module 1
+* link:https://github.com/praxis-proxy/praxis/blob/main/docs/architecture/pipeline-concepts.md[Praxis pipeline concepts^]: chains, pipelines and execution order. Used in: Modules 1 and 2
+* link:https://github.com/praxis-proxy/praxis/blob/main/docs/operating/security-hardening.md[Praxis security hardening^]: secure defaults and insecure options. Used in: Modules 1 and 2
+* link:https://github.com/praxis-proxy/ai/blob/main/docs/architecture/ai-inference.md[Praxis AI inference architecture^]: AI request classification. Used in: Module 3
+
+=== Community and open source
+
+* link:https://github.com/cloudflare/pingora[Pingora^]: the Rust proxy library Praxis is built on. Used in: Module 1
+* link:https://github.com/llm-d/llm-d-inference-sim[llm-d inference simulator^]: the CPU-only vLLM stand-in used for the models. Used in: Modules 1 and 3
+* link:https://github.com/llm-d/llm-d[llm-d^]: distributed inference, which Praxis AI can route for through `ext_proc`. Used in: Module 3
+* link:https://github.com/traefik/whoami[traefik/whoami^]: the echo server used as a backend. Used in: Modules 1 and 2
+
+== Share your feedback
+
+Help improve this workshop:
+
+* What did you find most valuable?
+* What could be improved?
+* What topics would you like to see covered in future versions?
+
+== Thank you!
+
+Thank you for taking part in this workshop.
+
+== Clean up (optional)
+
+To remove everything the workshop created, delete the namespace. This touches nothing outside it:
+
+[source,role="execute"]
+----
+oc delete project praxis
+----
