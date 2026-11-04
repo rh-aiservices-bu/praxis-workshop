@@ -47,7 +47,14 @@ Then follow `lab/openshift/README.md`. Everything goes into the `praxis` namespa
 
 == Publishing
 
-The GitHub Pages workflow in `.github/workflows/gh-pages.yml` builds the site with Antora and publishes it on pushes to `main`. Enable it under the repository's **Settings** → **Pages** → **Source: GitHub Actions**.
+The workflow in `.github/workflows/gh-pages.yml` builds the site with Antora 3.1.10 on Node 22:
+
+* **Pushes to `main`** build the site and publish it to GitHub Pages.
+* **Pull requests** only build it, and fail on any Antora warning (for example a broken include), so problems are caught before merging.
+* **Changes only under `lab/`** don't trigger a build, because they don't affect the site.
+* **Manual runs** are available from the **Actions** tab (`workflow_dispatch`).
+
+One-time setup: in the repository's **Settings** → **Pages**, set **Source** to **GitHub Actions**. The site is then served at `https://<owner>.github.io/<repo>/`.
 
 For an RHDP catalog item, point the Showroom workload at this repository and `site.yml`.
 

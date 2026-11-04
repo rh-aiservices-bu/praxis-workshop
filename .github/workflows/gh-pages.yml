@@ -1,4 +1,11 @@
-name: github pages
+# Build the Showroom site with Antora and publish it to GitHub Pages.
+#
+# Pushes to main build and deploy. Pull requests only build, so broken
+# includes or AsciiDoc errors are caught before they reach main.
+# Changes under lab/ don't affect the site, so they don't trigger a build.
+#
+# One-time setup: repository Settings > Pages > Source: GitHub Actions.
+name: showroom
 
 on:
   workflow_dispatch:
@@ -7,43 +14,58 @@ on:
     paths-ignore:
       - "README.adoc"
       - ".gitignore"
-
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+      - "lab/**"
+  pull_request:
+    paths-ignore:
+      - "README.adoc"
+      - ".gitignore"
+      - "lab/**"
 
 concurrency:
-  group: gh-pages
-  cancel-in-progress: false
+  group: showroom-${{ github.ref }}
+  # Superseded PR builds are cancelled; a Pages deployment is never cut off.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: checkout
-        uses: actions/checkout@v4
-      - name: configure pages
-        uses: actions/configure-pages@v5
+        uses: actions/checkout@v5
+
       - name: setup node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20.13.1
+          node-version: 22
+
       - name: install antora
-        run: npm install --global @antora/cli@3.1 @antora/site-generator@3.1
+        run: npm install --global @antora/cli@3.1.10 @antora/site-generator@3.1.10
+
       - name: antora generate
-        run: antora generate site.yml --stacktrace
+        run: antora generate site.yml --stacktrace --log-failure-level=warn
+
       - name: upload pages artifact
-        uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
         with:
           path: www
+
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
     steps:
-    - name: deploy github pages
-      id: deployment
-      uses: actions/deploy-pages@v4
+      - name: configure pages
+        uses: actions/configure-pages@v5
+
+      - name: deploy github pages
+        id: deployment
+        uses: actions/deploy-pages@v4
