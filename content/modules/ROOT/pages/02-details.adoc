@@ -33,6 +33,7 @@ You need:
 * cluster-admin access, or a user who can create a project, ResourceQuota, ServingRuntime, InferenceService and ServiceMonitor
 * Outbound access from the cluster to `ghcr.io` and `docker.io` to pull images
 * User workload monitoring enabled, for the metrics steps in the OpenShift console
+* The Cluster Observability Operator, with Perses enabled in its monitoring console plugin, for the dashboard in Module 2 Exercise 7. Without it, everything else still works.
 
 === GPU guardrails
 
@@ -98,6 +99,15 @@ servingruntimes.serving.kserve.io     2026-11-04T18:32:00Z
 ----
 
 If these resource types don't exist, OpenShift AI with KServe isn't installed, and Module 1 Exercise 2 and Module 3 can't run.
+
+Check that Perses dashboards are available:
+
+[source,role="execute"]
+----
+oc get crd persesdashboards.perses.dev persesdatasources.perses.dev
+----
+
+If these don't exist, skip the dashboard steps in Module 2 Exercise 7 and Module 3 Exercise 5.
 
 == Troubleshooting
 

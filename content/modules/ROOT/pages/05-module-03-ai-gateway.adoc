@@ -362,20 +362,31 @@ oc exec deploy/praxis-ai -- wget -qO- http://127.0.0.1:9902/metrics \
   | grep -E '^praxis_ai_(prompt_tokens_total|output_tokens_total|ttft_seconds_(sum|count))'
 ----
 
-. In the **OCP Console** tab, go to **Observe** → **Metrics** and run:
+. In the **OCP Console** tab, go to **Observe** → **Metrics** and run these two queries. Each query box takes one PromQL expression. Paste the first query and click **Run queries**. For each of the others, click **Add query**, paste it into the new box, and run again.
++
+Output tokens per second, per model:
 +
 [source,promql]
 ----
 sum by (model) (rate(praxis_ai_output_tokens_total{namespace="praxis"}[5m]))
-sum by (model) (rate(praxis_ai_ttft_seconds_sum[5m])) / sum by (model) (rate(praxis_ai_ttft_seconds_count[5m]))
 ----
++
+Average time to first token, per model, in seconds:
++
+[source,promql]
+----
+sum by (model) (rate(praxis_ai_ttft_seconds_sum{namespace="praxis"}[5m])) / sum by (model) (rate(praxis_ai_ttft_seconds_count{namespace="praxis"}[5m]))
+----
+
+. Open the **Praxis gateways** dashboard you created in Module 2 (**Observe** → **Dashboards (Perses)**, project **praxis**). The **AI gateway** row now shows output tokens per second and time to first token for each model. In the **Traffic** row, "Requests per second, by cluster and backend" shows the `granite` cluster's traffic split across `granite-a-predictor` and `granite-b-predictor`, and the failover from Exercise 2.
 
 === Verify
 
 Expected output (counts vary):
 
 ----
-praxis_ai_prompt_tokens_total{model="granite-3.1-8b-instruct",cluster="granite"} 30
+praxis_ai_prompt_tokens_total
+{model="granite-3.1-8b-instruct",cluster="granite"} 30
 praxis_ai_prompt_tokens_total{model="qwen3-8b",cluster="qwen"} 42
 praxis_ai_output_tokens_total{model="qwen3-8b",cluster="qwen"} 62
 praxis_ai_output_tokens_total{model="granite-3.1-8b-instruct",cluster="granite"} 89

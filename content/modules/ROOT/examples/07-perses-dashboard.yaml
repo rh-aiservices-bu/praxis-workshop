@@ -1,0 +1,174 @@
+apiVersion: perses.dev/v1alpha2
+kind: PersesDashboard
+metadata:
+  name: praxis
+  namespace: praxis
+  labels:
+    app.kubernetes.io/part-of: praxis-lab
+spec:
+  config:
+    display:
+      name: Praxis gateways
+    duration: 30m
+    refreshInterval: 30s
+    layouts:
+      - kind: Grid
+        spec:
+          display:
+            title: Traffic (Praxis core and Praxis AI)
+          items:
+            - {x: 0, "y": 0, width: 12, height: 8, content: {$ref: "#/spec/panels/requests"}}
+            - {x: 12, "y": 0, width: 12, height: 8, content: {$ref: "#/spec/panels/latency"}}
+            - {x: 0, "y": 8, width: 12, height: 8, content: {$ref: "#/spec/panels/upstreams"}}
+            - {x: 12, "y": 8, width: 12, height: 8, content: {$ref: "#/spec/panels/healthy"}}
+            - {x: 0, "y": 16, width: 12, height: 8, content: {$ref: "#/spec/panels/ratelimited"}}
+            - {x: 12, "y": 16, width: 12, height: 8, content: {$ref: "#/spec/panels/errors"}}
+      - kind: Grid
+        spec:
+          display:
+            title: AI gateway (Praxis AI)
+          items:
+            - {x: 0, "y": 0, width: 12, height: 8, content: {$ref: "#/spec/panels/tokens"}}
+            - {x: 12, "y": 0, width: 12, height: 8, content: {$ref: "#/spec/panels/ttft"}}
+    panels:
+      requests:
+        kind: Panel
+        spec:
+          display:
+            name: Requests per second, by gateway
+          plugin:
+            kind: TimeSeriesChart
+            spec:
+              legend: {mode: list, position: bottom}
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: sum by (job) (rate(praxis_http_requests_total{namespace="praxis"}[1m]))
+                    seriesNameFormat: "{{job}}"
+      latency:
+        kind: Panel
+        spec:
+          display:
+            name: Request latency p95, by gateway
+          plugin:
+            kind: TimeSeriesChart
+            spec:
+              legend: {mode: list, position: bottom}
+              yAxis:
+                format: {unit: seconds}
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: max by (job) (praxis_http_request_duration_seconds{namespace="praxis",quantile="0.95"})
+                    seriesNameFormat: "{{job}}"
+      upstreams:
+        kind: Panel
+        spec:
+          display:
+            name: Requests per second, by cluster and backend
+            description: Shows round robin, the 3:1 canary split, and failover between InferenceServices.
+          plugin:
+            kind: TimeSeriesChart
+            spec:
+              legend: {mode: list, position: bottom}
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: sum by (cluster, exported_endpoint) (rate(praxis_upstream_requests_total{namespace="praxis"}[1m]))
+                    seriesNameFormat: "{{cluster}}: {{exported_endpoint}}"
+      healthy:
+        kind: Panel
+        spec:
+          display:
+            name: Healthy endpoints, by cluster
+          plugin:
+            kind: TimeSeriesChart
+            spec:
+              legend: {mode: list, position: bottom}
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: max by (job, cluster) (praxis_upstream_healthy_endpoints{namespace="praxis"})
+                    seriesNameFormat: "{{job}}: {{cluster}}"
+      ratelimited:
+        kind: Panel
+        spec:
+          display:
+            name: Rate-limited requests per second
+          plugin:
+            kind: TimeSeriesChart
+            spec:
+              legend: {mode: list, position: bottom}
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: sum by (job) (rate(praxis_rate_limit_limited_total{namespace="praxis"}[1m]))
+                    seriesNameFormat: "{{job}}"
+      errors:
+        kind: Panel
+        spec:
+          display:
+            name: Errors per second, by type
+          plugin:
+            kind: TimeSeriesChart
+            spec:
+              legend: {mode: list, position: bottom}
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: sum by (job, type) (rate(praxis_errors_total{namespace="praxis"}[1m]))
+                    seriesNameFormat: "{{job}}: {{type}}"
+      tokens:
+        kind: Panel
+        spec:
+          display:
+            name: Output tokens per second, by model
+          plugin:
+            kind: TimeSeriesChart
+            spec:
+              legend: {mode: list, position: bottom}
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: sum by (model) (rate(praxis_ai_output_tokens_total{namespace="praxis"}[1m]))
+                    seriesNameFormat: "{{model}}"
+      ttft:
+        kind: Panel
+        spec:
+          display:
+            name: Time to first token, by model
+          plugin:
+            kind: TimeSeriesChart
+            spec:
+              legend: {mode: list, position: bottom}
+              yAxis:
+                format: {unit: seconds}
+          queries:
+            - kind: TimeSeriesQuery
+              spec:
+                plugin:
+                  kind: PrometheusTimeSeriesQuery
+                  spec:
+                    query: sum by (model) (rate(praxis_ai_ttft_seconds_sum{namespace="praxis"}[5m])) / sum by (model) (rate(praxis_ai_ttft_seconds_count{namespace="praxis"}[5m]))
+                    seriesNameFormat: "{{model}}"

@@ -18,6 +18,14 @@ oc apply -f 10-serving-runtime.yaml
 oc apply -f 11-models.yaml
 oc apply -f 20-praxis-ai.yaml
 
+# Optional: the Perses dashboard, if the Cluster Observability Operator is
+# installed with Perses enabled (prereqs/03 and 04).
+if oc get crd persesdashboards.perses.dev >/dev/null 2>&1; then
+  oc apply -f 07-perses-dashboard.yaml
+else
+  echo "Perses isn't installed; skipping the dashboard (see prereqs/)." >&2
+fi
+
 for d in backend-a backend-b backend-c praxis-basics praxis-ai; do
   oc -n praxis rollout status "deployment/$d" --timeout=180s
 done

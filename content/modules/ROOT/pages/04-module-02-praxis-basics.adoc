@@ -346,7 +346,39 @@ Each `load_balancer` cluster lists its backends' DNS names in `trusted_private_e
 
 == Exercise 4: Rate limiting
 
-The `limited` listener runs the extra `throttle` chain: a `rate_limit` filter with a token bucket that holds 4 requests and refills at 2 per second.
+The rate limit is a filter chain of its own, `throttle`, containing one `rate_limit` filter:
+
+[source,yaml]
+----
+filter_chains:
+  - name: throttle
+    filters:
+      - filter: rate_limit
+        mode: global
+        rate: 2
+        burst: 4
+----
+
+The `rate_limit` filter is a **token bucket**. Each request takes one token from the bucket, and a request that finds the bucket empty is rejected with 429.
+
+* `burst: 4` is the bucket's size: up to 4 requests can go through back to back.
+* `rate: 2` is how fast it refills: 2 tokens per second, so the sustained limit is 2 requests per second.
+* `mode: global` means one bucket shared by every client. With `mode: per_ip`, each client IP address gets its own bucket instead.
+
+Only one of the two listeners includes the `throttle` chain:
+
+[source,yaml]
+----
+listeners:
+  - name: web
+    address: "0.0.0.0:8080"
+    filter_chains: [observability, edge, routing]
+  - name: limited
+    address: "0.0.0.0:8081"
+    filter_chains: [observability, throttle, edge, routing]
+----
+
+Requests to the `limited` listener, on port 8081, pass through `rate_limit` before routing. Requests to `web` never meet it. Each listener has its own Route, so `$L` reaches `limited` and `$B` reaches `web`.
 
 . Send ten quick requests through the limited Route:
 +
@@ -525,12 +557,59 @@ oc exec deploy/praxis-basics -- wget -qO- http://127.0.0.1:9902/metrics \
 
 . In the **OCP Console** tab, go to **Observe** → **Metrics** and run these queries. The ServiceMonitor feeds Praxis metrics into OpenShift user workload monitoring.
 +
+Each query box takes one PromQL expression. Paste the first query and click **Run queries**. For each of the others, click **Add query**, paste it into the new box, and run again.
++
+Requests per second, per gateway:
++
 [source,promql]
 ----
 sum by (job) (rate(praxis_http_requests_total{namespace="praxis"}[5m]))
+----
++
+Healthy endpoints in each health-checked cluster:
++
+[source,promql]
+----
 praxis_upstream_healthy_endpoints{namespace="praxis"}
+----
++
+Config reloads, by result:
++
+[source,promql]
+----
 praxis_config_reload_total{namespace="praxis"}
 ----
+
+. Queries are good for exploring. For an at-a-glance view, build a **Perses dashboard**: Perses is the dashboarding tool that the Cluster Observability Operator adds to the OpenShift console. Start with a **datasource**, which tells Perses to query OpenShift's monitoring stack (the Thanos querier) for this project, using the viewer's own credentials:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$07-perses-datasource.yaml[]
+EOF
+----
+
+. Create the dashboard. It has two rows. **Traffic** covers both gateways: requests, p95 latency, requests per backend, healthy endpoints, rate-limited requests and errors. **AI gateway** shows tokens and time to first token, and fills in once you deploy Praxis AI in Module 3:
++
+[source,role="execute"]
+----
+cat << 'EOF' | oc apply -f -
+include::example$07-perses-dashboard.yaml[]
+EOF
+----
+
+. Generate some traffic, so the panels have something to show:
++
+[source,role="execute"]
+----
+for i in $(seq 1 60); do
+  curl -s -o /dev/null $B/app; curl -s -o /dev/null $B/canary; curl -s -o /dev/null $L/app
+done
+----
+
+. In the **OCP Console** tab, go to **Observe** → **Dashboards (Perses)**, select the project **praxis**, and open **Praxis gateways**.
++
+The panel "Requests per second, by cluster and backend" groups by a label named `exported_endpoint`, not `endpoint`. Praxis labels upstream metrics with `endpoint`, but the Prometheus scrape adds its own `endpoint` label (the ServiceMonitor port), so Prometheus renames Praxis's label to `exported_endpoint`.
 
 === Verify
 
@@ -548,6 +627,8 @@ praxis_upstream_requests_total
 * The access log shows method, path, status, duration and the cluster and upstream chosen
 * `praxis_config_reload_total` shows both the successful and the failed reload from Exercise 6
 * The same metrics are queryable in the OpenShift console
+* On the **Praxis gateways** dashboard, "Requests per second, by cluster and backend" shows `canary` traffic to backend-a at about three times the rate of backend-c, and `app` traffic split evenly between backend-a and backend-b
+* "Rate-limited requests per second" shows the `praxis-basics` gateway rejecting traffic on the limited listener
 
 == Learning outcomes
 

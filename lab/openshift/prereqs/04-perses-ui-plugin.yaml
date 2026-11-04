@@ -1,0 +1,13 @@
+# Prerequisite (not part of the workshop): enable Perses dashboards in the
+# OpenShift console (Observe > Dashboards). Needs the Cluster Observability
+# Operator (03-cluster-observability-operator.yaml). Skip this if a
+# "monitoring" UIPlugin with Perses enabled already exists.
+apiVersion: observability.openshift.io/v1alpha1
+kind: UIPlugin
+metadata:
+  name: monitoring
+spec:
+  type: Monitoring
+  monitoring:
+    perses:
+      enabled: true

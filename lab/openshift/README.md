@@ -23,6 +23,15 @@ oc -n redhat-ods-operator get csv -w      # wait for rhods-operator Succeeded
 oc apply -f lab/openshift/prereqs/02-datasciencecluster.yaml
 ```
 
+**Optional, for the Perses dashboard:** the Cluster Observability Operator
+with Perses enabled in its monitoring console plugin:
+
+```console
+oc apply -f lab/openshift/prereqs/03-cluster-observability-operator.yaml
+oc -n openshift-cluster-observability-operator get csv -w   # wait for Succeeded
+oc apply -f lab/openshift/prereqs/04-perses-ui-plugin.yaml
+```
+
 Background reading: [../CONCEPTS.md](../CONCEPTS.md) (how Praxis works) and
 [../AI.md](../AI.md) (Praxis AI).
 
@@ -252,11 +261,36 @@ oc -n praxis exec deploy/praxis-basics -- wget -qO- http://127.0.0.1:9902/metric
 A `ServiceMonitor` feeds the metrics into OpenShift user-workload
 monitoring. In the console, go to **Observe → Metrics** and try:
 
+Each query box takes one expression: run the first, then use **Add query**
+for each of the others.
+
 ```promql
 sum by (job) (rate(praxis_http_requests_total{namespace="praxis"}[5m]))
+```
+
+```promql
 praxis_upstream_healthy_endpoints{namespace="praxis"}
+```
+
+```promql
 praxis_config_reload_total{namespace="praxis"}
 ```
+
+For an at-a-glance view, create the **Perses dashboard**
+([07-perses-dashboard.yaml](07-perses-dashboard.yaml): a datasource for
+OpenShift's Thanos querier, and a dashboard). `setup.sh` already applies it
+when Perses is installed:
+
+```console
+oc apply -f lab/openshift/07-perses-dashboard.yaml
+for i in $(seq 1 60); do curl -s -o /dev/null $B/app; curl -s -o /dev/null $B/canary; curl -s -o /dev/null $L/app; done
+```
+
+Then go to **Observe → Dashboards (Perses)**, project **praxis**, and open
+**Praxis gateways**. The Traffic row shows the canary's 3:1 split, the
+round robin across `app`, and rate limiting. The AI gateway row fills in
+during Part 1. Note that upstream panels group by `exported_endpoint`: the
+scrape adds its own `endpoint` label, so Prometheus renames Praxis's.
 
 ---
 
@@ -420,11 +454,20 @@ oc -n praxis exec deploy/praxis-ai -- wget -qO- http://127.0.0.1:9902/metrics \
   count: about 0.15 s for granite and 0.30 s for qwen, exactly the latency
   the simulators were configured with.
 
+The **Praxis gateways** Perses dashboard's AI gateway row now shows the same
+data, and its Traffic row shows granite traffic split across `granite-a` and
+`granite-b`, including the failover from step 9.
+
 In **Observe → Metrics**:
+
+One expression per query box (use **Add query** for the second):
 
 ```promql
 sum by (model) (rate(praxis_ai_output_tokens_total{namespace="praxis"}[5m]))
-sum by (model) (rate(praxis_ai_ttft_seconds_sum[5m])) / sum by (model) (rate(praxis_ai_ttft_seconds_count[5m]))
+```
+
+```promql
+sum by (model) (rate(praxis_ai_ttft_seconds_sum{namespace="praxis"}[5m])) / sum by (model) (rate(praxis_ai_ttft_seconds_count{namespace="praxis"}[5m]))
 ```
 
 ## 13. Exercise: add a model with zero downtime
@@ -523,6 +566,9 @@ Reset with `oc apply -f lab/openshift/20-praxis-ai.yaml` and
     capabilities. KServe's added `kube-rbac-proxy` and `agent` containers
     don't get in the way. The only change needed was running whoami on
     port 8080, since a non-root UID can't bind port 80.
+15. **Praxis's `endpoint` label becomes `exported_endpoint`.** The scrape
+    adds its own `endpoint` label, so Prometheus renames the one on
+    `praxis_upstream_requests_total`. Query `exported_endpoint`.
 
 ## Clean up
 

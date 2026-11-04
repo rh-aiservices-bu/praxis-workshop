@@ -23,7 +23,8 @@ lab/
   README.md                      Lab overview
   CONCEPTS.md, AI.md             Background: how Praxis and Praxis AI work
   openshift/                     The lab: manifests, setup.sh, teardown.sh, walkthrough
-    prereqs/                     Installs OpenShift AI with KServe, if the cluster lacks it
+    prereqs/                     Installs OpenShift AI with KServe, and optionally the
+                                 Cluster Observability Operator with Perses
   local/                         Optional: podman version for a laptop
 ----
 
@@ -35,6 +36,7 @@ Some manifests are split into one file per step, so each block learners run stay
 * `10-serving-runtime.yaml` matches `lab/openshift/10-serving-runtime.yaml`, and the three `11-*.yaml` files (one InferenceService each) together must match `lab/openshift/11-models.yaml`.
 * The five `06-basics-*.yaml` files together must match `lab/openshift/06-praxis-basics.yaml`.
 * The five `20-ai-*.yaml` files (excluding `-with-llama`) together must match `lab/openshift/20-praxis-ai.yaml`.
+* `07-perses-datasource.yaml` and `07-perses-dashboard.yaml` together must match `lab/openshift/07-perses-dashboard.yaml`.
 * `20-ai-configmap-with-llama.yaml` is the ConfigMap from `lab/openshift/solutions/20-praxis-ai-with-llama.yaml`; the Module 3 exercise solution applies only the ConfigMap.
 
 == Running the lab without Showroom

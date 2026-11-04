@@ -1,0 +1,30 @@
+# Prerequisite (not part of the workshop): install the Cluster Observability
+# Operator, which provides Perses dashboards in the OpenShift console.
+# Skip this if the cluster already has it.
+#
+#   oc apply -f lab/openshift/prereqs/03-cluster-observability-operator.yaml
+#   oc -n openshift-cluster-observability-operator get csv -w   # wait for Succeeded
+#   oc apply -f lab/openshift/prereqs/04-perses-ui-plugin.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-cluster-observability-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: cluster-observability-operator
+  namespace: openshift-cluster-observability-operator
+spec: {}
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: cluster-observability-operator
+  namespace: openshift-cluster-observability-operator
+spec:
+  name: cluster-observability-operator
+  channel: stable
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic
