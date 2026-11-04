@@ -22,6 +22,7 @@ By the end of this module, you'll be able to:
 Praxis is a framework for building proxy servers, written in Rust. It ships a ready-to-run proxy binary, `praxis`, configured entirely in YAML. You can also write your own filters in Rust and compile them into a custom binary that uses the same YAML.
 
 link:https://github.com/praxis-proxy/ai[Praxis AI^] is an example of the second approach. It is a separate binary, `praxis-ai`, made of Praxis core plus a set of AI-specific filters. Its configuration format is the same, so every core feature you use in Module 2 also works in the AI gateway in Module 3.
+
 === Built on Pingora
 
 Praxis is built on link:https://github.com/cloudflare/pingora[Pingora^], an open source Rust library from Cloudflare for building fast, reliable network services. Pingora is a library, not a product. It handles the low-level work:
